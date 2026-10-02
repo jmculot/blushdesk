@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The same four brand colors as BrandPalette.kt; XML needs its own copy for the window and icon. -->
+    <color name="blush_soft_pink">#FCE4EC</color>
+    <color name="blush_vibrant_rose">#E91E63</color>
+    <color name="blush_deep_magenta">#880E4F</color>
+    <color name="blush_lavender_blush">#FFF0F5</color>
+</resources>

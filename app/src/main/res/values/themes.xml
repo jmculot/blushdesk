@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Only the window behind Compose: it shows for a frame at launch, so it matches the app background. -->
+    <style name="Theme.BlushDesk" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/blush_lavender_blush</item>
+        <item name="android:colorPrimary">@color/blush_vibrant_rose</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

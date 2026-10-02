@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        No <uses-permission> entries are needed, deliberately:
+          - Photos from the gallery come through the system Photo Picker (the user shares one image).
+          - Camera photos are taken by the device's camera app and handed back through FileProvider,
+            so the CAMERA permission is never requested.
+          - Receipts are copied to Downloads through MediaStore, which needs no storage permission
+            on API 29+ (the app's minSdk).
+          - Excel files and PDFs are shared as content:// URIs, not through shared storage.
+        The app is fully offline, so INTERNET is not declared either.
+    -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application
+        android:name=".BlushDeskApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BlushDesk">
+
+        <!--
+            Landscape is the designed orientation. Android 16 ignores orientation locks on large
+            screens for apps targeting API 36, so the UI also adapts to portrait and split screen
+            (see DUAL_PANE_MIN_WIDTH in ShowroomTabletScreen).
+
+            configChanges lets Compose handle resizes itself, so rotating, folding or changing font
+            size never recreates the activity and throws away an order that is half typed.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density|fontScale|layoutDirection|locale"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            tools:ignore="DiscouragedApi"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Lets other apps read generated PDFs and spreadsheets, one URI at a time (see file_paths.xml). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
