@@ -20,8 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import com.blushdesk.app.domain.Formats
-import java.io.File
+import com.blushdesk.app.utils.Formats
 
 /**
  * A circular profile picture. The initials are always drawn underneath, so a missing file, a
@@ -29,7 +28,8 @@ import java.io.File
  */
 @Composable
 fun Avatar(
-    photoPath: String?,
+    /** A `file://` URI from the database, or null. */
+    imageUri: String?,
     name: String,
     size: Dp,
     modifier: Modifier = Modifier,
@@ -41,7 +41,7 @@ fun Avatar(
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.primaryContainer)
             .then(if (ring != null) Modifier.border(ring, CircleShape) else Modifier)
-            .semantics { contentDescription = "Photo of $name" },
+            .semantics { contentDescription = "Profile picture of $name" },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -50,9 +50,9 @@ fun Avatar(
             fontWeight = FontWeight.Bold,
             fontSize = (size.value * 0.36f).sp,
         )
-        if (photoPath != null) {
+        if (imageUri != null) {
             AsyncImage(
-                model = File(photoPath),
+                model = imageUri,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),

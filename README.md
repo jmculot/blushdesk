@@ -1,54 +1,80 @@
 # BlushDesk
 
-An offline Android tablet app for running a showroom counter: keep a list of buyers, record what
-they bought, follow each order from processing to delivery, print a PDF receipt for paid orders and
-export everything to Excel. Built with Kotlin, Jetpack Compose (Material 3) and Room, with a custom
-pink theme.
+An offline Android tablet app for running a showroom counter. It keeps a list of buyers, records
+what they bought, follows each order from processing to delivery, prints a PDF receipt for paid
+orders and exports everything to Excel. Built with Kotlin, Jetpack Compose (Material 3) and Room,
+with a custom pink design system.
 
 ![Dual-pane dashboard](docs/screenshots/dashboard.png)
 
 ## Features
 
-**Operator profile.** A card at the top of the left pane shows the tablet user's photo, name,
-showroom, email and phone. The first launch asks for these details, because every receipt carries
-them. The photo can come from the camera or the gallery.
+**Operator profile.** A card at the top of the left pane shows the tablet user's photo, full
+name, showroom, email and phone number. The app keeps one active profile. The first launch asks
+for it, because every receipt carries it. The photo can be taken with the camera or picked with
+the Android Photo Picker.
 
-**Buyers.** Add, edit, search and delete buyers (name, contact number, optional email, photo).
-The date added is recorded automatically. The list shows each buyer's order count and unpaid
-balance. Deleting a buyer deletes their orders too, after a confirmation.
+**Buyers.** Add, edit, search and delete buyers (full name, contact number, optional email,
+profile photo). The date added is set automatically. Each row in the buyer list shows the photo,
+name, contact number, number of orders, and the fulfillment and payment status of the latest
+order. Deleting a buyer deletes their orders too, after a confirmation.
 
-**Orders.** Product, unit price and quantity, with the total recalculated as you type; purchase
-date and time pickers; payment mode (cash or online); payment status (paid, pending or unpaid);
-fulfillment stage. Money is stored as whole centavos, so totals never pick up rounding errors.
+**Orders.** Each order records the product, unit price and quantity. The total amount is always
+calculated as unit price × quantity and is never typed in. It also records the purchase date and
+time (pickers), the payment mode (Cash or Online payment) and the payment status (Unpaid, Pending
+or Paid). Money is a `BigDecimal` with two decimals, stored as whole centavos, so totals never
+pick up rounding errors. "Online payment" only records how the buyer paid. The app never makes a
+transaction.
 
-**Lifecycle tracking.** Each order card shows a Processing → Preparing → Delivered stepper. One tap
-on "Move to …" advances it, and tapping any stage sets it directly (which also undoes a mis-tap).
-Delivered orders turn green.
+**Order history and lifecycle.** The buyer's orders are listed newest first. The selected order
+expands to show its purchase and payment details and a Processing → Preparing → Delivered
+progress component. One tap on "Move to …" advances it a single stage. Tapping a stage sets it
+directly, which is how a mis-tap is undone. Delivered orders turn green.
 
-**PDF receipts.** Enabled only for paid orders; the button is disabled with an explanation
-otherwise, and the generator itself refuses unpaid orders. The A4 receipt has the showroom branding,
-buyer details, an itemized line, the total, purchase time, payment method and a semi-transparent
-PAID stamp. It is saved to `Download/BlushDesk/` and can be opened (to print) or shared straight
-from the app.
+**PDF receipts.** Only paid orders can get one. The button stays disabled with an explanation
+otherwise, and the generator itself refuses unpaid orders. The A4 receipt has:
+- the showroom details (operator, store, email, phone)
+- the buyer's details
+- an itemized line with unit price, quantity and total
+- purchase date and time, payment method, payment status and fulfillment status
+- a semi-transparent PAID stamp
 
-**Excel export.** "Export to Excel" in the top bar writes a styled `.xlsx` with three sheets and
-opens the Android share sheet (Gmail, Drive, Files, Quick Share, ...):
+The PDF is written to the app's private cache, copied to `Download/BlushDesk/`, and can be opened
+(to print) or shared from the app.
 
-| Sheet   | Contents |
-|---------|----------|
-| Summary | Showroom details, totals billed / collected / outstanding, breakdown by stage, payment status and payment mode |
-| Orders  | One row per order: number, buyer, contact, product, unit price, quantity, total, purchase time, payment mode, payment status, fulfillment stage |
-| Buyers  | One row per buyer with order count, total billed, paid and outstanding |
+**Excel export.** "Export to Excel" in the top bar opens a dialog that lists what the workbook
+contains. It then writes a formatted `.xlsx` and opens the Android share sheet (Gmail, Drive,
+Files, Quick Share, ...):
 
-Header rows are frozen and filterable, money uses a peso number format, and status cells are color coded.
+| Sheet    | Columns / contents |
+|----------|--------------------|
+| Buyers   | Buyer ID, Full Name, Contact Number, Email, Date Added, Number of Orders |
+| Orders   | Order ID, Buyer ID, Buyer Name, Product, Unit Price, Quantity, Total Amount, Purchase Date, Purchase Time, Payment Mode, Payment Status, Fulfillment Status |
+| Operator | Operator Name, Store Name, Email, Phone Number |
+| Summary  | Total Buyers, Total Orders, Paid / Unpaid / Pending Orders, Processing / Preparing / Delivered Orders, Total Recorded Sales |
 
-| New order with live total | Receipt | Excel export |
-|---|---|---|
-| ![Order dialog](docs/screenshots/order-dialog.png) | ![Receipt](docs/screenshots/receipt.png) | ![Share sheet](docs/screenshots/excel-share.png) |
+Headers are styled and frozen, the Buyers and Orders tables have filters, money uses a peso
+currency format, dates and times are real Excel dates, and status cells are color coded.
 
-**Layout.** Designed for a landscape tablet: buyers on the left, the selected buyer's dashboard
-on the right. Windows narrower than 600dp (phone, split screen) switch to one pane at a time with
-a back arrow. This matters because Android 16+ ignores orientation locks on large screens.
+| New order with live total | Export dialog | Paid receipt | Share sheet |
+|---|---|---|---|
+| ![Order dialog](docs/screenshots/order-dialog.png) | ![Export dialog](docs/screenshots/export-dialog.png) | ![Receipt](docs/screenshots/receipt.png) | ![Share sheet](docs/screenshots/excel-share.png) |
+
+**Layout.** The app is designed for a landscape tablet: buyers on the left, the selected buyer's
+dashboard on the right. Windows narrower than 600dp (phone, split screen) switch to one pane at a
+time with a back arrow. This matters because Android 16+ ignores orientation locks on large
+screens.
+
+**Errors.** Messages are written for the operator. A broken rule, such as "Enter a valid phone
+number" or "Mark the order as paid before issuing a receipt", is shown as written. Any other
+failure is logged and replaced by a generic message, so raw database or library errors never
+reach the screen. Error snackbars use the error colors and an icon.
+
+## Offline by design
+
+There is no Firebase, back end, REST API, login or cloud sync, and the manifest does not declare
+the `INTERNET` permission. Everything is stored in a local Room database, and the app works the
+same in airplane mode.
 
 ## Tech stack
 
@@ -56,53 +82,73 @@ a back arrow. This matters because Android 16+ ignores orientation locks on larg
 |---|---|
 | Language | Kotlin 2.4, coroutines and Flow |
 | UI | Jetpack Compose, Material 3 (Compose BOM 2026.09) |
-| Architecture | MVVM with a repository; a small hand-written dependency container |
-| Database | Room 2.8 (KSP): entities, DAO, type converters, relations |
-| Excel | Apache POI 5.5 (`poi-ooxml`) plus `aalto-xml` for the XML streaming API Android lacks |
+| Architecture | MVVM with a repository (interface in `domain`, Room implementation in `data`), a small hand-written dependency container |
+| Database | Room 2.8 (KSP): entities, DAO, type converters, relations, an exported schema and a tested migration |
+| Excel | Apache POI 5.5 (`poi-ooxml`), with `aalto-xml` supplying the XML streaming API Android lacks |
 | PDF | Android's built-in `PdfDocument` canvas |
 | Images | Coil 3, `ExifInterface` |
 | Build | AGP 9.4, Gradle 9.8, compileSdk 37, targetSdk 37, minSdk 29 (Android 10) |
 
-## How it is organised
+## Project structure
 
 ```
 app/src/main/java/com/blushdesk/app/
 ├── data/
-│   ├── local/           Room: entities (OperatorProfile, Buyer, Order), enums, Converters,
-│   │                    ShowroomDao, ShowroomDatabase, relations (BuyerWithOrders, ...)
-│   ├── repository/      ShowroomRepository (interface) + ShowroomRepositoryImpl
-│   └── storage/         PhotoStorage, DownloadsSaver, AppFiles (FileProvider folders)
-├── domain/              Money, Validation, Formats, BrandPalette: plain Kotlin, unit tested
-├── export/              ExcelExporter, PdfReceiptGenerator, DocumentService
-├── di/                  AppContainer
-└── ui/
-    ├── theme/           ShowroomPinkTheme: every color, type, shape and spacing token
-    ├── components/      Avatar, StatusChip, OrderStepper, StatCard, AmountText, PhotoPickerField, ...
-    ├── dialogs/         EditOperatorProfileDialog, BuyerEditorDialog, OrderEditorDialog, ReceiptReadyDialog
-    ├── panes/           MasterPane, DetailPane
-    ├── ShowroomTabletScreen.kt, ShowroomViewModel.kt, ShowroomUiState.kt, Sharing.kt
+│   ├── local/database/   AppDatabase, ShowroomDao, Entities (OperatorProfile, Buyer, Order),
+│   │                     Relations (BuyerWithOrders, ...), Converters, Migrations
+│   └── repository/       OfflineShowroomRepository (Room implementation)
+├── domain/
+│   ├── model/            Enums (PaymentMode, PaymentStatus, FulfillmentStatus), BuyerDetail,
+│   │                     ExportSnapshot, UserFacingException
+│   └── repository/       ShowroomRepository (interface)
+├── ui/
+│   ├── theme/            ShowroomPinkTheme: Color, Type, Shape, Dimens, Theme
+│   ├── components/       OperatorProfileCard, BuyerList, BuyerListItem, SearchBar, OrderCard,
+│   │                     OrderStatusBadge (+ FulfillmentProgress), PaymentStatusBadge, StatCard,
+│   │                     EmptyState, LoadingIndicator, ShowroomSnackbar, FormDialog, ...
+│   ├── showroom/         ShowroomTabletScreen, ShowroomViewModel, ShowroomUiState, MasterPane
+│   ├── buyer/            AddBuyerDialog, EditBuyerDialog, BuyerDetailScreen, BuyerDetailHeader
+│   ├── order/            AddOrderDialog, EditOrderDialog, OrderDetailCard, OrderHistory, ReceiptReadyDialog
+│   ├── operator/         EditOperatorProfileDialog
+│   └── export/           ExportDialog
+├── utils/                PdfReceiptGenerator, ExcelExporter, DocumentService, Money, Validation,
+│                         Formats, PhotoStorage, DownloadsSaver, AppFiles, Sharing
+├── di/                   AppContainer
+└── MainActivity.kt, BlushDeskApp.kt
 ```
 
-Data flows one way. Room emits `Flow`s, `ShowroomViewModel` combines them into a single
-`ShowroomUiState`, and the screen renders that state and calls view model functions. One-off
-results (a message, "receipt ready", "share this workbook") arrive as events on a channel. The
-view model depends only on interfaces (`ShowroomRepository`, `DocumentService`, `PhotoStore`),
-which is what lets its unit tests run on the JVM with fakes.
+Data flows one way. Room emits `Flow`s, `ShowroomViewModel` combines them into one immutable
+`ShowroomUiState`, and the screen renders that state and calls view model functions.
+Composables never touch the database. One-off results (success, error, "receipt ready", "share
+this workbook") arrive as events. The view model depends only on interfaces, so its unit tests
+run on the JVM with fakes.
 
 ### Database
 
 ```
-operator_profile (one row)      buyers 1 ──── * orders
-  fullName, storeName,            id, fullName,     id, buyerId (FK, ON DELETE CASCADE),
-  email, phone, photoPath         contact, email,   productName, unitPriceMinor, quantity,
-                                  dateAdded,        purchasedAt, paymentMode, paymentStatus,
-                                  photoPath         orderStatus
+operator_profile (one active row)   buyers 1 ──── * orders
+  fullName, storeName, email,          id, fullName,           id, buyerId (FK, ON DELETE CASCADE),
+  phoneNumber, profileImageUri,        contactNumber, email,   productName, unitPrice, quantity,
+  createdAt, updatedAt                 dateAdded,              totalAmount, purchaseDateTime,
+                                       profileImageUri,        paymentMode, paymentStatus,
+                                       createdAt, updatedAt    fulfillmentStatus, createdAt, updatedAt
 ```
 
-- Amounts are `Long` centavos (`unitPriceMinor`). The total is derived (`unitPriceMinor * quantity`) and never stored.
-- Enums are stored by name, not position, so reordering them cannot relabel old rows.
-- The schema is exported to `app/schemas/` so future migrations can be written and tested.
-  There is deliberately no destructive-migration fallback: this is the shop's only copy of its records.
+- Money is `BigDecimal` in code and centavos (INTEGER) in SQLite, so SQL `SUM()` is exact. A third
+  decimal is rejected, never rounded.
+- `totalAmount` is stored for reporting but recomputed from unit price × quantity on every save.
+  `createdAt` / `updatedAt` are stamped by the repository.
+- Enums are stored by name, so reordering them cannot relabel old rows.
+- The DAO has explicit queries for:
+  - CRUD
+  - search
+  - observing buyers, the selected buyer and their orders
+  - order totals
+  - orders by payment status and by fulfillment status
+  - the export data
+- The schema is exported to `app/schemas/`. Version 1 → 2 (the move to this specification's field
+  names) is a hand-written migration, tested with Room's `MigrationTestHelper`. There is
+  deliberately no destructive fallback: this is the shop's only copy of its records.
 
 ## Permissions, files and privacy
 
@@ -110,18 +156,35 @@ The app requests **no runtime permissions** and declares none of its own. The on
 built APK is `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which androidx.core adds. It is
 signature-level and private to the app, and users never see it.
 
-- **Gallery photos** come through the system Photo Picker, so the user hands over one image.
+- **Gallery photos** come through the Photo Picker, so the user hands over one image.
 - **Camera photos** are taken by the device's camera app, which writes to a FileProvider URI.
   The app never needs the `CAMERA` permission.
 - **Receipts** are copied into Downloads through MediaStore, which needs no storage permission on Android 10+.
 - **Sharing** uses `content://` URIs from a FileProvider, and `res/xml/file_paths.xml` exposes
   only the `receipts/`, `exports/` and `camera/` cache folders. A test checks that anything else,
   including the database, is refused.
-- **Photos** are downsized (longest edge 1024 px) and copied into private storage. Replaced or
+- **Photos** are downsized (longest edge 1024 px) and kept in private storage. Replaced or
   abandoned photos are deleted.
 - **Backups** are off, both cloud and device-to-device, because the database holds customers'
   personal details.
-- **Network:** the app has none. `INTERNET` is not declared.
+
+## Design system
+
+`ShowroomPinkTheme` builds a Material 3 color scheme from the brand palette:
+- Soft Pink `#FCE4EC`
+- Vibrant Rose `#E91E63`
+- Deep Magenta `#880E4F`
+- Lavender Blush `#FFF0F5`
+- White
+- dark text `#212121`
+- muted text `#757575`
+
+Colors, typography, shapes and dimensions live in `ui/theme`; composables do not hard-code them.
+
+`#757575` falls below the 4.5:1 contrast minimum on the pink surfaces. Gray text placed on pink
+uses a darker on-tint variant (`#666666`), and the master pane is white.
+
+Status badges pair color with an icon and a word, so they are readable without telling colors apart.
 
 ## Building and running
 
@@ -134,37 +197,42 @@ platform 37 installed.
 ```
 
 For the intended experience use a tablet emulator in landscape (for example a 10.1" WXGA profile).
+On first launch the app asks for the operator's profile.
 
 ## Tests
 
 ```bash
-./gradlew :app:testDebugUnitTest            # 47 JVM tests, no device needed
-./gradlew :app:connectedDebugAndroidTest    # 37 tests on a running emulator or device
+./gradlew :app:testDebugUnitTest            # 60 JVM tests, no device needed
+./gradlew :app:connectedDebugAndroidTest    # 50 tests on a running emulator or device
 ```
 
-- **Unit tests:** money parsing and formatting, validation, date formats, converters, LIKE-pattern
-  escaping, the Excel workbook's content (POI on the JVM), and the view model against fake
-  repository and document services.
-- **Instrumented tests:** the real SQL (cascade delete, foreign keys, aggregates, search with
-  `%` and `_`), Apache POI running on Android's runtime, PDF generation rendered back to pixels
-  (header color, PAID stamp, operator photo, refusal of unpaid orders), photo import (downsizing,
-  EXIF rotation, non-images), Downloads saving and replacing, and FileProvider access rules.
+- **Unit tests:**
+  - money (parsing, totals, centavos), validation, date formats, enums and converters, LIKE escaping
+  - the Excel workbook (sheets, exact columns, values, formats; POI on the JVM)
+  - the theme's color initialization
+  - the view model against fakes: selection, order expansion, totals, lifecycle, deletes, friendly errors, exports
+- **Instrumented tests:**
+  - every DAO query on real SQLite (cascade delete, foreign keys, latest-order status, totals, status lists, export summary, search with `%` and `_`)
+  - the v1 → v2 migration
+  - the repository rules (recomputed totals, timestamps, validation, photo cleanup)
+  - Apache POI on Android's runtime
+  - PDF generation rendered back to pixels
+  - photo import, Downloads saving, FileProvider rules
 
-The PDF test also writes PNG renders of each receipt to the app's `files/test-artifacts/`, so a
-person can look at the output.
+The PDF test writes PNG renders of each receipt to the app's `files/test-artifacts/` so a person
+can look at the output.
 
 ## Configuration
 
-- **Currency:** `Money.SYMBOL` in `domain/Money.kt` (peso by default). The PDF and Excel formats follow it.
-- **Brand colors:** `domain/BrandPalette.kt` feeds the Compose theme, the PDF and the Excel styles,
-  so a rebrand is a one-file change.
+- **Currency:** `Money.SYMBOL` in `utils/Money.kt` (peso by default). The PDF and Excel formats follow it.
+- **Brand colors:** `BrandPalette` in `ui/theme/Color.kt` feeds the Compose theme, the PDF and the Excel styles.
 
 ## Known limitations
 
-- **Release builds** run without R8 shrinking, so the unsigned release APK is about 70 MB.
+- **Release builds** run without R8 shrinking, so the unsigned release APK is about 70 MB. Apache
   POI loads schema classes by name; `app/proguard-rules.pro` has a starting set of keep rules,
   but shrinking has not been verified, so it is off. No release signing is configured.
-- **One product per order**, so a receipt has a single line item.
+- **One product per order**, as the data model specifies, so a receipt has one line item.
 - **Light theme only**, on purpose: the pink palette is the brand.
 - **Test coverage:** tested on an Android 15 (API 35) tablet emulator, not yet on an Android 16+
   device or real hardware.

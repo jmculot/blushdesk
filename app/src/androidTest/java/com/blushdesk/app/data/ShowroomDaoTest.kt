@@ -2,15 +2,15 @@ package com.blushdesk.app.data
 
 import android.content.Context
 import android.database.sqlite.SQLiteConstraintException
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.blushdesk.app.TestData
-import com.blushdesk.app.data.local.OrderStatus
-import com.blushdesk.app.data.local.PaymentStatus
-import com.blushdesk.app.data.local.ShowroomDao
-import com.blushdesk.app.data.local.ShowroomDatabase
-import com.blushdesk.app.data.repository.ShowroomRepositoryImpl
+import com.blushdesk.app.data.local.database.AppDatabase
+import com.blushdesk.app.data.local.database.ShowroomDao
+import com.blushdesk.app.data.repository.OfflineShowroomRepository
+import com.blushdesk.app.domain.model.FulfillmentStatus
+import com.blushdesk.app.domain.model.PaymentStatus
+import com.blushdesk.app.utils.Money
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -21,43 +21,51 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.math.BigDecimal
+import java.time.Instant
 
-/** Runs the real SQL against a real (in-memory) SQLite, with the same foreign-key settings as production. */
+/** The real SQL against a real (in-memory) SQLite, with foreign keys on as in production. */
 @RunWith(AndroidJUnit4::class)
 class ShowroomDaoTest {
 
-    private lateinit var db: ShowroomDatabase
+    private lateinit var db: AppDatabase
     private lateinit var dao: ShowroomDao
 
     @Before
     fun create() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        db = Room.inMemoryDatabaseBuilder(context, ShowroomDatabase::class.java).allowMainThreadQueries().build()
+        db = TestData.inMemoryDatabase(ApplicationProvider.getApplicationContext<Context>())
         dao = db.dao()
     }
 
     @After
     fun close() = db.close()
 
+    private fun search(q: String) = runBlocking {
+        dao.searchBuyers(OfflineShowroomRepository.likePattern(q)).first().map { it.buyer.fullName }
+    }
+
+    // ---- CRUD and types ----------------------------------------------------------------------
+
     @Test
     fun buyer_round_trips_with_all_fields() = runBlocking {
         val id = dao.insertBuyer(TestData.buyer("Ana Reyes"))
         val loaded = dao.getBuyer(id)!!
         assertEquals("Ana Reyes", loaded.fullName)
-        assertEquals("ana@example.com", loaded.email)
-        assertEquals(TestData.buyer().dateAdded, loaded.dateAdded) // Instant survives the converter
+        assertEquals("0917 123 4567", loaded.contactNumber)
+        assertEquals(TestData.buyer().dateAdded, loaded.dateAdded)
+        assertEquals(loaded.dateAdded, loaded.createdAt)
     }
 
     @Test
-    fun order_round_trips_enums_money_and_time() = runBlocking {
+    fun order_round_trips_money_enums_and_time_exactly() = runBlocking {
         val buyerId = dao.insertBuyer(TestData.buyer())
-        val orderId = dao.insertOrder(TestData.order(buyerId, unitMinor = 99_999, qty = 3))
+        val orderId = dao.insertOrder(TestData.order(buyerId, unit = "999.99", qty = 3))
         val loaded = dao.getOrder(orderId)!!
-        assertEquals(99_999L, loaded.unitPriceMinor)
-        assertEquals(299_997L, loaded.totalMinor)
+        assertEquals(BigDecimal("999.99"), loaded.unitPrice)
+        assertEquals(BigDecimal("2999.97"), loaded.totalAmount)
         assertEquals(PaymentStatus.PAID, loaded.paymentStatus)
-        assertEquals(OrderStatus.DELIVERED, loaded.orderStatus)
-        assertEquals(TestData.order(buyerId).purchasedAt, loaded.purchasedAt)
+        assertEquals(FulfillmentStatus.DELIVERED, loaded.fulfillmentStatus)
+        assertEquals(TestData.order(buyerId).purchaseDateTime, loaded.purchaseDateTime)
     }
 
     @Test
@@ -86,34 +94,60 @@ class ShowroomDaoTest {
     }
 
     @Test
-    fun buyer_list_counts_orders_and_sums_only_the_unpaid_balance() = runBlocking {
-        val ana = dao.insertBuyer(TestData.buyer("Ana"))
-        dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana, unitMinor = 100_000, qty = 1, pay = PaymentStatus.PAID))
-        dao.insertOrder(TestData.order(ana, unitMinor = 50_000, qty = 2, pay = PaymentStatus.PENDING))
-        dao.insertOrder(TestData.order(ana, unitMinor = 10_000, qty = 1, pay = PaymentStatus.UNPAID))
-
-        val list = dao.observeBuyerList("%").first()
-
-        assertEquals(listOf("Ana", "Ben"), list.map { it.buyer.fullName })
-        assertEquals(3, list[0].orderCount)
-        assertEquals(110_000L, list[0].outstandingMinor) // 100,000 pending + 10,000 unpaid; the paid one is excluded
-        assertEquals(0, list[1].orderCount) // a buyer with no orders still appears (LEFT JOIN)
-        assertEquals(0L, list[1].outstandingMinor)
+    fun operator_is_one_row_that_upsert_replaces() = runBlocking {
+        assertNull(dao.getOperator())
+        dao.upsertOperator(TestData.operator)
+        dao.upsertOperator(TestData.operator.copy(storeName = "Renamed"))
+        assertEquals("Renamed", dao.observeOperator().first()!!.storeName)
+        assertEquals("Lia Santos", dao.getOperator()!!.fullName)
     }
 
     @Test
-    fun search_is_case_insensitive_and_matches_name_phone_or_email() = runBlocking {
+    fun targeted_updates_change_one_order_and_stamp_updated_at() = runBlocking {
+        val buyer = dao.insertBuyer(TestData.buyer())
+        val target = dao.insertOrder(TestData.order(buyer, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PROCESSING))
+        val other = dao.insertOrder(TestData.order(buyer, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PROCESSING))
+        val later = Instant.parse("2026-10-05T00:00:00Z")
+
+        dao.updateFulfillmentStatus(target, FulfillmentStatus.PREPARING, later)
+        dao.updatePaymentStatus(target, PaymentStatus.PAID, later)
+
+        val changed = dao.getOrder(target)!!
+        assertEquals(FulfillmentStatus.PREPARING, changed.fulfillmentStatus)
+        assertEquals(PaymentStatus.PAID, changed.paymentStatus)
+        assertEquals(later, changed.updatedAt)
+        assertEquals(FulfillmentStatus.PROCESSING, dao.getOrder(other)!!.fulfillmentStatus)
+        assertEquals(PaymentStatus.PENDING, dao.getOrder(other)!!.paymentStatus)
+    }
+
+    // ---- Buyer list and search ---------------------------------------------------------------
+
+    @Test
+    fun buyer_list_shows_order_count_and_the_latest_orders_statuses() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer("Ana"))
+        dao.insertBuyer(TestData.buyer("Ben"))
+        dao.insertOrder(TestData.order(ana, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED, at = "2026-09-01T00:00:00Z"))
+        dao.insertOrder(TestData.order(ana, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING, at = "2026-10-01T00:00:00Z"))
+
+        val list = dao.searchBuyers("%").first()
+
+        assertEquals(listOf("Ana", "Ben"), list.map { it.buyer.fullName })
+        assertEquals(2, list[0].orderCount)
+        assertEquals(FulfillmentStatus.PREPARING, list[0].latestFulfillmentStatus) // the October order
+        assertEquals(PaymentStatus.PENDING, list[0].latestPaymentStatus)
+        assertEquals(0, list[1].orderCount)
+        assertNull(list[1].latestFulfillmentStatus)
+        assertNull(list[1].latestPaymentStatus)
+    }
+
+    @Test
+    fun search_matches_name_phone_or_email_case_insensitively() = runBlocking {
         dao.insertBuyer(TestData.buyer("Ana Reyes", email = "ana@example.com"))
         dao.insertBuyer(TestData.buyer("Ben Cruz", email = "bc@shop.example"))
 
-        fun search(q: String) = runBlocking {
-            dao.observeBuyerList(ShowroomRepositoryImpl.likePattern(q)).first().map { it.buyer.fullName }
-        }
-
         assertEquals(listOf("Ana Reyes"), search("ANA"))
         assertEquals(listOf("Ben Cruz"), search("shop.example"))
-        assertEquals(listOf("Ana Reyes", "Ben Cruz"), search("0917 123")) // both share the same contact number
+        assertEquals(listOf("Ana Reyes", "Ben Cruz"), search("0917 123"))
         assertEquals(emptyList<String>(), search("nobody"))
     }
 
@@ -123,66 +157,98 @@ class ShowroomDaoTest {
         dao.insertBuyer(TestData.buyer("Ben Cruz"))
         dao.insertBuyer(TestData.buyer("Cy_Lo"))
 
-        fun search(q: String) = runBlocking {
-            dao.observeBuyerList(ShowroomRepositoryImpl.likePattern(q)).first().map { it.buyer.fullName }
-        }
-
-        assertEquals(listOf("Ana 50% Off"), search("%")) // not "match everything"
+        assertEquals(listOf("Ana 50% Off"), search("%"))
         assertEquals(listOf("Cy_Lo"), search("_"))
         assertEquals(listOf("Cy_Lo"), search("y_l"))
     }
 
+    // ---- Orders and totals -------------------------------------------------------------------
+
     @Test
-    fun summary_counts_open_orders_and_splits_paid_from_outstanding() = runBlocking {
+    fun buyer_orders_are_newest_first() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer())
+        dao.insertOrder(TestData.order(ana, product = "Old", at = "2026-09-01T00:00:00Z"))
+        dao.insertOrder(TestData.order(ana, product = "New", at = "2026-10-01T00:00:00Z"))
+        assertEquals(listOf("New", "Old"), dao.observeOrdersForBuyer(ana).first().map { it.productName })
+    }
+
+    @Test
+    fun order_totals_split_paid_from_outstanding() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer())
+        dao.insertOrder(TestData.order(ana, unit = "1000.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED))
+        dao.insertOrder(TestData.order(ana, unit = "500.00", qty = 2, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING))
+        dao.insertOrder(TestData.order(ana, unit = "100.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+
+        val totals = dao.observeOrderTotals(ana).first()
+
+        assertEquals(3, totals.orderCount)
+        assertEquals(2, totals.openOrders)
+        assertEquals(Money.of("1000.00"), totals.paidAmount)
+        assertEquals(Money.of("1100.00"), totals.outstandingAmount)
+        assertEquals(Money.of("2100.00"), totals.totalAmount)
+    }
+
+    @Test
+    fun totals_of_a_buyer_without_orders_are_zero() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer())
+        val totals = dao.observeOrderTotals(ana).first()
+        assertEquals(0, totals.orderCount)
+        assertEquals(Money.ZERO, totals.totalAmount)
+    }
+
+    @Test
+    fun orders_can_be_retrieved_by_payment_and_by_fulfillment_status() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer())
+        dao.insertOrder(TestData.order(ana, product = "A", pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+        dao.insertOrder(TestData.order(ana, product = "B", pay = PaymentStatus.PAID, stage = FulfillmentStatus.PREPARING))
+        dao.insertOrder(TestData.order(ana, product = "C", pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PREPARING))
+
+        assertEquals(listOf("A", "C"), dao.observeOrdersByPaymentStatus(PaymentStatus.UNPAID).first().map { it.productName })
+        assertEquals(listOf("B"), dao.observeOrdersByPaymentStatus(PaymentStatus.PAID).first().map { it.productName })
+        assertEquals(listOf("B", "C"), dao.observeOrdersByFulfillmentStatus(FulfillmentStatus.PREPARING).first().map { it.productName })
+        assertEquals(emptyList<String>(), dao.observeOrdersByFulfillmentStatus(FulfillmentStatus.DELIVERED).first().map { it.productName })
+    }
+
+    @Test
+    fun showroom_summary_counts_buyers_orders_and_amounts() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana, unitMinor = 200_000, qty = 1, pay = PaymentStatus.PAID, stage = OrderStatus.DELIVERED))
-        dao.insertOrder(TestData.order(ana, unitMinor = 30_000, qty = 2, pay = PaymentStatus.PAID, stage = OrderStatus.PREPARING))
-        dao.insertOrder(TestData.order(ana, unitMinor = 5_000, qty = 1, pay = PaymentStatus.UNPAID, stage = OrderStatus.PROCESSING))
+        dao.insertOrder(TestData.order(ana, unit = "2000.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED))
+        dao.insertOrder(TestData.order(ana, unit = "50.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
 
-        val summary = dao.observeSummary().first()
+        val summary = dao.observeShowroomSummary().first()
 
         assertEquals(2, summary.buyerCount)
-        assertEquals(2, summary.openOrders)
-        assertEquals(260_000L, summary.paidMinor)
-        assertEquals(5_000L, summary.outstandingMinor)
+        assertEquals(2, summary.orderCount)
+        assertEquals(1, summary.openOrders)
+        assertEquals(Money.of("2000.00"), summary.paidAmount)
+        assertEquals(Money.of("50.00"), summary.outstandingAmount)
     }
 
     @Test
-    fun summary_of_an_empty_database_is_all_zeros() = runBlocking {
-        val summary = dao.observeSummary().first()
-        assertEquals(0, summary.buyerCount)
-        assertEquals(0L, summary.paidMinor)
+    fun export_summary_counts_every_status_and_total_sales() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer("Ana"))
+        dao.insertBuyer(TestData.buyer("Ben"))
+        dao.insertOrder(TestData.order(ana, unit = "100.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED))
+        dao.insertOrder(TestData.order(ana, unit = "200.00", qty = 1, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING))
+        dao.insertOrder(TestData.order(ana, unit = "300.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+        dao.insertOrder(TestData.order(ana, unit = "400.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+
+        val s = dao.getExportSummary()
+
+        assertEquals(2, s.totalBuyers)
+        assertEquals(4, s.totalOrders)
+        assertEquals(1, s.paidOrders)
+        assertEquals(2, s.unpaidOrders)
+        assertEquals(1, s.pendingOrders)
+        assertEquals(2, s.processingOrders)
+        assertEquals(1, s.preparingOrders)
+        assertEquals(1, s.deliveredOrders)
+        assertEquals(Money.of("1000.00"), s.totalRecordedSales)
     }
 
     @Test
-    fun targeted_updates_change_one_column_of_one_order() = runBlocking {
-        val buyer = dao.insertBuyer(TestData.buyer())
-        val target = dao.insertOrder(TestData.order(buyer, pay = PaymentStatus.PENDING, stage = OrderStatus.PROCESSING))
-        val other = dao.insertOrder(TestData.order(buyer, pay = PaymentStatus.PENDING, stage = OrderStatus.PROCESSING))
-
-        dao.updateOrderStatus(target, OrderStatus.PREPARING)
-        dao.updatePaymentStatus(target, PaymentStatus.PAID)
-
-        val changed = dao.getOrder(target)!!
-        assertEquals(OrderStatus.PREPARING, changed.orderStatus)
-        assertEquals(PaymentStatus.PAID, changed.paymentStatus)
-        assertEquals(OrderStatus.PROCESSING, dao.getOrder(other)!!.orderStatus)
-        assertEquals(PaymentStatus.PENDING, dao.getOrder(other)!!.paymentStatus)
-    }
-
-    @Test
-    fun operator_is_a_single_row_that_upsert_replaces() = runBlocking {
-        assertNull(dao.getOperator())
-        dao.upsertOperator(TestData.operator)
-        dao.upsertOperator(TestData.operator.copy(storeName = "Renamed"))
-
-        assertEquals("Renamed", dao.observeOperator().first()!!.storeName)
-        assertEquals("Lia Santos", dao.getOperator()!!.fullName)
-    }
-
-    @Test
-    fun buyer_with_orders_relation_returns_each_buyers_own_orders() = runBlocking {
+    fun relation_returns_each_buyers_own_orders() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         val ben = dao.insertBuyer(TestData.buyer("Ben"))
         dao.insertOrder(TestData.order(ana, product = "Sofa"))
@@ -193,18 +259,13 @@ class ShowroomDaoTest {
         assertEquals(listOf("Ana", "Ben"), all.map { it.buyer.fullName })
         assertEquals(setOf("Sofa", "Table"), all[0].orders.map { it.productName }.toSet())
         assertEquals(listOf("Lamp"), all[1].orders.map { it.productName })
-
-        assertEquals(2, dao.observeBuyerWithOrders(ana).first()!!.orders.size)
-        assertNull(dao.observeBuyerWithOrders(12345).first())
     }
 
     @Test
-    fun observing_a_buyer_emits_again_when_an_order_is_added() = runBlocking {
+    fun observing_a_buyer_emits_null_after_deletion() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
-        assertEquals(0, dao.observeBuyerWithOrders(ana).first()!!.orders.size)
-
-        dao.insertOrder(TestData.order(ana))
-
-        assertEquals(1, dao.observeBuyerWithOrders(ana).first()!!.orders.size)
+        assertNotNull(dao.observeBuyer(ana).first())
+        dao.deleteBuyer(ana)
+        assertNull(dao.observeBuyer(ana).first())
     }
 }

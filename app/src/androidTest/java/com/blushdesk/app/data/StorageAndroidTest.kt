@@ -10,9 +10,9 @@ import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.blushdesk.app.data.storage.AppFiles
-import com.blushdesk.app.data.storage.DownloadsSaver
-import com.blushdesk.app.data.storage.PhotoStorage
+import com.blushdesk.app.utils.AppFiles
+import com.blushdesk.app.utils.DownloadsSaver
+import com.blushdesk.app.utils.PhotoStorage
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -54,9 +54,10 @@ class StorageAndroidTest {
         return file
     }
 
-    private fun bounds(path: String) = BitmapFactory.Options().also {
+    /** Size of the image behind a stored `file://` URI. */
+    private fun bounds(imageUri: String) = BitmapFactory.Options().also {
         it.inJustDecodeBounds = true
-        BitmapFactory.decodeFile(path, it)
+        BitmapFactory.decodeFile(AppFiles.localFile(imageUri)!!.path, it)
     }
 
     // ---- PhotoStorage ----------------------------------------------------------------------
@@ -68,7 +69,8 @@ class StorageAndroidTest {
         val b = bounds(path)
         assertEquals(1024, maxOf(b.outWidth, b.outHeight))
         assertEquals(768, minOf(b.outWidth, b.outHeight)) // aspect ratio 4:3 preserved
-        assertTrue(path.startsWith(File(context.filesDir, "photos").absolutePath))
+        assertTrue(path, path.startsWith("file://"))
+        assertTrue(AppFiles.localFile(path)!!.path.startsWith(File(context.filesDir, "photos").absolutePath))
     }
 
     @Test
@@ -119,7 +121,7 @@ class StorageAndroidTest {
         photos.delete(null)
         photos.delete("")
 
-        assertFalse(File(ours).exists())
+        assertFalse(AppFiles.localFile(ours)!!.exists())
         assertTrue(foreign.exists())
     }
 

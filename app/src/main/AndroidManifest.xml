@@ -31,12 +31,15 @@
             screens for apps targeting API 36, so the UI also adapts to portrait and split screen
             (see DUAL_PANE_MIN_WIDTH in ShowroomTabletScreen).
 
-            configChanges lets Compose handle resizes itself, so rotating, folding or changing font
-            size never recreates the activity and throws away an order that is half typed.
+            configChanges lets Compose handle resizes itself, so rotating, folding, split screen or
+            changing font size never recreates the activity and throws away an order that is half typed.
+            Density is deliberately NOT in the list: when "Display size" changes while the app is open,
+            a handled change left the pane breakpoint measuring with the old density (tested on the
+            emulator), so that one rare change recreates the activity instead.
         -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density|fontScale|layoutDirection|locale"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|fontScale|layoutDirection|locale"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             tools:ignore="DiscouragedApi"

@@ -7,8 +7,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import com.blushdesk.app.ui.ShowroomTabletScreen
-import com.blushdesk.app.ui.ShowroomViewModel
+import com.blushdesk.app.ui.showroom.ShowroomTabletScreen
+import com.blushdesk.app.ui.showroom.ShowroomViewModel
 import com.blushdesk.app.ui.theme.ShowroomPinkTheme
 
 class MainActivity : ComponentActivity() {

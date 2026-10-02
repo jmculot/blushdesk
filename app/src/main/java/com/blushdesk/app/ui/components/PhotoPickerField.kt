@@ -30,7 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.blushdesk.app.data.storage.AppFiles
+import com.blushdesk.app.ui.theme.Dimens
+import com.blushdesk.app.utils.AppFiles
 import java.io.File
 
 /** What a dialog needs from the ViewModel to handle photos, without depending on the ViewModel itself. */
@@ -50,12 +51,12 @@ class PhotoActions(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PhotoPickerField(
-    photoPath: String?,
+    imageUri: String?,
     name: String,
     onPicked: (Uri) -> Unit,
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
-    avatarSize: Dp = 96.dp,
+    avatarSize: Dp = Dimens.avatarPicker,
 ) {
     val context = LocalContext.current
     var cameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
@@ -72,7 +73,7 @@ fun PhotoPickerField(
 
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Avatar(
-            photoPath = photoPath,
+            imageUri = imageUri,
             name = name.ifBlank { "?" },
             size = avatarSize,
             ring = BorderStroke(3.dp, MaterialTheme.colorScheme.primaryContainer),
@@ -102,7 +103,7 @@ fun PhotoPickerField(
                     Text("  Choose photo")
                 }
             }
-            if (photoPath != null) {
+            if (imageUri != null) {
                 TextButton(onClick = onRemove) { Text("Remove photo") }
             }
             problem?.let {
