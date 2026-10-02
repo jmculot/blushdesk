@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Icon
@@ -28,8 +30,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.blushdesk.app.data.local.OrderStatus
 import com.blushdesk.app.domain.BrandPalette
 import com.blushdesk.app.ui.theme.ToneColors
@@ -169,19 +174,37 @@ fun StatCard(
             ) {
                 Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(22.dp))
             }
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = label.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                AmountText(value, MaterialTheme.typography.titleLarge, MaterialTheme.colorScheme.onSurface)
             }
         }
     }
+}
+
+/**
+ * A money value on one line that shrinks to fit instead of wrapping or ending in "…". A dashboard
+ * figure that reads "₱12,500.5" with a stray "0" underneath, or "₱1,234,5…", is worse than a
+ * slightly smaller font.
+ */
+@Composable
+fun AmountText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier,
+    minSize: TextUnit = 11.sp,
+) {
+    BasicText(
+        text = text,
+        modifier = modifier,
+        style = style.copy(color = color, fontWeight = FontWeight.Bold),
+        maxLines = 1,
+        autoSize = TextAutoSize.StepBased(minFontSize = minSize, maxFontSize = style.fontSize, stepSize = 0.5.sp),
+    )
 }

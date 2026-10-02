@@ -12,6 +12,8 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
+import androidx.core.graphics.withClip
+import androidx.core.graphics.withTranslation
 import com.blushdesk.app.data.local.entity.Buyer
 import com.blushdesk.app.data.local.entity.OperatorProfile
 import com.blushdesk.app.data.local.entity.Order
@@ -139,14 +141,13 @@ class PdfReceiptGenerator {
         private fun avatar(cx: Float, cy: Float, r: Float) {
             if (avatar != null) {
                 val path = Path().apply { addCircle(cx, cy, r, Path.Direction.CW) }
-                canvas.save()
-                canvas.clipPath(path)
-                // Centre-crop: scale to cover the circle, then center.
-                val scale = (2 * r) / minOf(avatar.width, avatar.height)
-                val w = avatar.width * scale
-                val h = avatar.height * scale
-                canvas.drawBitmap(avatar, null, RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), shape)
-                canvas.restore()
+                canvas.withClip(path) {
+                    // Center-crop: scale to cover the circle, then center.
+                    val scale = (2 * r) / minOf(avatar.width, avatar.height)
+                    val w = avatar.width * scale
+                    val h = avatar.height * scale
+                    drawBitmap(avatar, null, RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), shape)
+                }
             } else {
                 shape.style = Paint.Style.FILL
                 shape.color = argb(BrandPalette.SOFT_PINK)
@@ -247,10 +248,7 @@ class PdfReceiptGenerator {
             val rowTop = top + headerH
             val rowH = maxOf(56f, nameLayout.height + 40f)
 
-            canvas.save()
-            canvas.translate(itemX, rowTop + 14f)
-            nameLayout.draw(canvas)
-            canvas.restore()
+            canvas.withTranslation(itemX, rowTop + 14f) { nameLayout.draw(this) }
             line("Order ${Formats.orderNumber(order.id)}", itemX, rowTop + 14f + nameLayout.height + 14f, 9f, BrandPalette.MUTED)
 
             val baseline = rowTop + rowH / 2f + 4f
@@ -298,28 +296,26 @@ class PdfReceiptGenerator {
         /** A rotated, ~16%-opaque rubber-stamp "PAID" across the middle of the page. */
         private fun paidStamp() {
             val alpha = 42
-            canvas.save()
-            canvas.translate(W / 2, H / 2 + 20f)
-            canvas.rotate(-22f)
-
             applyStyle(124f, BrandPalette.VIBRANT_ROSE, bold = true)
             text.letterSpacing = 0.06f
             text.alpha = alpha
             text.textAlign = Paint.Align.CENTER
             val metrics = text.fontMetrics
             val textWidth = text.measureText("PAID")
-            val half = RectF(-textWidth / 2 - 34f, metrics.ascent - 8f, textWidth / 2 + 34f, metrics.descent + 14f)
+            val frame = RectF(-textWidth / 2 - 34f, metrics.ascent - 8f, textWidth / 2 + 34f, metrics.descent + 14f)
 
-            shape.style = Paint.Style.STROKE
-            shape.color = argb(BrandPalette.VIBRANT_ROSE, alpha)
-            shape.strokeWidth = 9f
-            canvas.drawRoundRect(half, 22f, 22f, shape)
-            shape.strokeWidth = 3f
-            half.inset(15f, 15f)
-            canvas.drawRoundRect(half, 12f, 12f, shape)
-
-            canvas.drawText("PAID", 0f, 0f, text)
-            canvas.restore()
+            // Drawn around the origin, then moved to the page center and tilted like a rubber stamp.
+            canvas.withTranslation(W / 2, H / 2 + 20f) {
+                rotate(-22f)
+                shape.style = Paint.Style.STROKE
+                shape.color = argb(BrandPalette.VIBRANT_ROSE, alpha)
+                shape.strokeWidth = 9f
+                drawRoundRect(frame, 22f, 22f, shape)
+                shape.strokeWidth = 3f
+                frame.inset(15f, 15f)
+                drawRoundRect(frame, 12f, 12f, shape)
+                drawText("PAID", 0f, 0f, text)
+            }
         }
 
         // ---- Primitives ---------------------------------------------------------------------

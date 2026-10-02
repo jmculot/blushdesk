@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.blushdesk.app.data.local.PaymentStatus
 import com.blushdesk.app.data.local.entity.OperatorProfile
 import com.blushdesk.app.data.local.relation.BuyerListItem
@@ -57,6 +58,7 @@ import com.blushdesk.app.domain.BrandPalette
 import com.blushdesk.app.domain.Formats
 import com.blushdesk.app.domain.Money
 import com.blushdesk.app.ui.ShowroomUiState
+import com.blushdesk.app.ui.components.AmountText
 import com.blushdesk.app.ui.components.Avatar
 import com.blushdesk.app.ui.components.StatusChip
 import com.blushdesk.app.ui.theme.ShowroomColors
@@ -246,14 +248,7 @@ private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.secondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            AmountText(value, MaterialTheme.typography.titleSmall, MaterialTheme.colorScheme.secondary, minSize = 9.sp)
         }
     }
 }

@@ -39,16 +39,21 @@ class DocumentServiceAndroidTest {
 
     @Before
     fun setUp() {
+        clearGeneratedFiles() // start from an empty cache, whatever earlier runs or manual use left behind
         db = Room.inMemoryDatabaseBuilder(context, ShowroomDatabase::class.java).allowMainThreadQueries().build()
         repository = ShowroomRepositoryImpl(db.dao(), PhotoStorage(context))
         service = AndroidDocumentService(context, repository, ExcelExporter(), PdfReceiptGenerator(), DownloadsSaver(context))
     }
 
+    private fun clearGeneratedFiles() {
+        AppFiles.cacheDir(context, AppFiles.RECEIPTS_DIR).listFiles()?.forEach { it.delete() }
+        AppFiles.cacheDir(context, AppFiles.EXPORTS_DIR).listFiles()?.forEach { it.delete() }
+    }
+
     @After
     fun tearDown() {
         db.close()
-        AppFiles.cacheDir(context, AppFiles.RECEIPTS_DIR).listFiles()?.forEach { it.delete() }
-        AppFiles.cacheDir(context, AppFiles.EXPORTS_DIR).listFiles()?.forEach { it.delete() }
+        clearGeneratedFiles()
         val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         context.contentResolver.query(
             collection, arrayOf(MediaStore.Downloads._ID),
