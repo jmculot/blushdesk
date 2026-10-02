@@ -91,23 +91,30 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
 
     // ---- Worksheet 2: Orders ----------------------------------------------------------------
 
+    /**
+     * One row per product line, so an order with three products takes three rows sharing the same
+     * Order ID. "Total Amount" is that line's unit price x quantity; "Order Total" repeats the
+     * whole order's total on each of its rows. Zebra striping alternates per order, not per row.
+     */
     private fun writeOrders(sheet: XSSFSheet, styles: Styles, buyers: List<BuyerWithOrders>) {
-        writeHeader(sheet, styles, ORDER_COLUMNS, widths = listOf(10, 10, 24, 32, 15, 10, 16, 15, 14, 17, 16, 18))
-        val rows = buyers
+        writeHeader(sheet, styles, ORDER_COLUMNS, widths = listOf(10, 10, 24, 32, 15, 10, 16, 15, 14, 17, 16, 18, 16))
+        val orders = buyers
             .flatMap { entry -> entry.orders.map { entry.buyer to it } }
-            .sortedWith(compareBy({ it.second.purchaseDateTime }, { it.second.id }))
+            .sortedWith(compareBy({ it.second.order.purchaseDateTime }, { it.second.order.id }))
 
-        rows.forEachIndexed { index, (buyer, order) ->
-            val zebra = index % 2 == 1
+        var rowIndex = 1
+        orders.forEachIndexed { orderIndex, (buyer, withItems) ->
+            val order = withItems.order
+            val zebra = orderIndex % 2 == 1
             val purchased = order.purchaseDateTime.atZone(zone)
-            sheet.createRow(index + 1).apply {
+            withItems.items.forEach { item -> sheet.createRow(rowIndex++).apply {
                 number(0, order.id.toDouble(), styles.body(Kind.ID, zebra))
                 number(1, buyer.id.toDouble(), styles.body(Kind.ID, zebra))
                 text(2, buyer.fullName, styles.body(Kind.TEXT, zebra))
-                text(3, order.productName, styles.body(Kind.TEXT, zebra))
-                number(4, Money.toExcelNumber(order.unitPrice), styles.body(Kind.MONEY, zebra))
-                number(5, order.quantity.toDouble(), styles.body(Kind.COUNT, zebra))
-                number(6, Money.toExcelNumber(order.totalAmount), styles.body(Kind.MONEY_BOLD, zebra))
+                text(3, item.productName, styles.body(Kind.TEXT, zebra))
+                number(4, Money.toExcelNumber(item.unitPrice), styles.body(Kind.MONEY, zebra))
+                number(5, item.quantity.toDouble(), styles.body(Kind.COUNT, zebra))
+                number(6, Money.toExcelNumber(item.lineTotal), styles.body(Kind.MONEY, zebra))
                 createCell(7).apply {
                     setCellValue(purchased.toLocalDate())
                     cellStyle = styles.body(Kind.DATE, zebra)
@@ -117,9 +124,10 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
                 text(9, order.paymentMode.label, styles.body(Kind.TEXT, zebra))
                 text(10, order.paymentStatus.label, styles.badge(BrandPalette.tone(order.paymentStatus)))
                 text(11, order.fulfillmentStatus.label, styles.badge(BrandPalette.tone(order.fulfillmentStatus)))
-            }
+                number(12, Money.toExcelNumber(order.totalAmount), styles.body(Kind.MONEY_BOLD, zebra))
+            } }
         }
-        finishTable(sheet, ORDER_COLUMNS.size, rows.size)
+        finishTable(sheet, ORDER_COLUMNS.size, rowIndex - 1)
     }
 
     // ---- Worksheet 3: Operator --------------------------------------------------------------
@@ -334,6 +342,8 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
         val ORDER_COLUMNS = listOf(
             "Order ID", "Buyer ID", "Buyer Name", "Product", "Unit Price", "Quantity", "Total Amount",
             "Purchase Date", "Purchase Time", "Payment Mode", "Payment Status", "Fulfillment Status",
+            // Not in the original specification: added with multi-product orders.
+            "Order Total",
         )
 
         val OPERATOR_COLUMNS = listOf("Operator Name", "Store Name", "Email", "Phone Number")

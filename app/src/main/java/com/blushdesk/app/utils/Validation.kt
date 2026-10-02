@@ -1,7 +1,7 @@
 package com.blushdesk.app.utils
 
 import com.blushdesk.app.data.local.database.Buyer
-import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
 import java.math.BigDecimal
 
 /**
@@ -13,6 +13,9 @@ object Validation {
     const val MAX_NAME = 80
     const val MAX_PRODUCT = 100
     const val MAX_QUANTITY = 9_999
+
+    /** Product lines per order; keeps a receipt to a few pages and a total far inside a Long. */
+    const val MAX_ITEMS = 30
 
     private val EMAIL = Regex("""^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}$""")
     private val PHONE_CHARS = Regex("""^[0-9+()\-.\s]+$""")
@@ -74,7 +77,14 @@ object Validation {
     fun buyerProblem(buyer: Buyer): String? =
         name(buyer.fullName, "Buyer name") ?: phone(buyer.contactNumber) ?: email(buyer.email)
 
-    /** The first problem with an order about to be saved, or null. */
-    fun orderProblem(order: Order): String? =
-        product(order.productName) ?: unitPrice(order.unitPrice) ?: quantity(order.quantity)
+    /** The first problem with one product line, or null. */
+    fun itemProblem(item: OrderItem): String? =
+        product(item.productName) ?: unitPrice(item.unitPrice) ?: quantity(item.quantity)
+
+    /** The first problem with an order's product lines, or null. */
+    fun itemsProblem(items: List<OrderItem>): String? = when {
+        items.isEmpty() -> "Add at least one product"
+        items.size > MAX_ITEMS -> "An order can have at most $MAX_ITEMS products"
+        else -> items.firstNotNullOfOrNull { itemProblem(it) }
+    }
 }

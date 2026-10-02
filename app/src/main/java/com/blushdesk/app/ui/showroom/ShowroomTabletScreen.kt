@@ -41,7 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.blushdesk.app.data.local.database.Buyer
-import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.domain.model.PaymentStatus
 import com.blushdesk.app.ui.buyer.AddBuyerDialog
 import com.blushdesk.app.ui.buyer.BuyerDetailActions
@@ -72,9 +72,9 @@ private sealed interface ActiveDialog {
     data object AddBuyer : ActiveDialog
     data class EditBuyer(val buyer: Buyer) : ActiveDialog
     data object AddOrder : ActiveDialog
-    data class EditOrder(val order: Order) : ActiveDialog
+    data class EditOrder(val order: OrderWithItems) : ActiveDialog
     data object DeleteBuyer : ActiveDialog
-    data class DeleteOrder(val order: Order) : ActiveDialog
+    data class DeleteOrder(val order: OrderWithItems) : ActiveDialog
     data object Export : ActiveDialog
     data class ReceiptReady(val receipt: ReceiptDocument) : ActiveDialog
 }
@@ -152,10 +152,10 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
             order = OrderActions(
                 onEdit = { dialog = ActiveDialog.EditOrder(it) },
                 onDelete = { dialog = ActiveDialog.DeleteOrder(it) },
-                onAdvance = viewModel::advanceOrder,
-                onSetFulfillment = { order, status -> viewModel.setFulfillmentStatus(order.id, status) },
-                onMarkPaid = { viewModel.setPaymentStatus(it.id, PaymentStatus.PAID) },
-                onReceipt = { viewModel.generateReceipt(it.id) },
+                onAdvance = { viewModel.advanceOrder(it.order) },
+                onSetFulfillment = { order, status -> viewModel.setFulfillmentStatus(order.order.id, status) },
+                onMarkPaid = { viewModel.setPaymentStatus(it.order.id, PaymentStatus.PAID) },
+                onReceipt = { viewModel.generateReceipt(it.order.id) },
             ),
         )
 
@@ -260,8 +260,8 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
             AddOrderDialog(
                 buyerId = buyer.id,
                 buyerName = buyer.fullName,
-                onSave = {
-                    viewModel.saveOrder(it)
+                onSave = { order, items ->
+                    viewModel.saveOrder(order, items)
                     dismiss()
                 },
                 onDismiss = dismiss,
@@ -271,8 +271,8 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
         is ActiveDialog.EditOrder -> EditOrderDialog(
             order = active.order,
             buyerName = state.detail?.buyer?.fullName.orEmpty(),
-            onSave = {
-                viewModel.saveOrder(it)
+            onSave = { order, items ->
+                viewModel.saveOrder(order, items)
                 dismiss()
             },
             onDismiss = dismiss,
@@ -298,9 +298,10 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
 
         is ActiveDialog.DeleteOrder -> DeleteConfirmationDialog(
             title = "Delete this order?",
-            message = "${active.order.productName} (${Formats.orderNumber(active.order.id)}) will be removed. This cannot be undone.",
+            message = "${Formats.itemsSummary(active.order.items.map { it.productName })} " +
+                "(${Formats.orderNumber(active.order.order.id)}) will be removed. This cannot be undone.",
             onConfirm = {
-                viewModel.deleteOrder(active.order.id)
+                viewModel.deleteOrder(active.order.order.id)
                 dismiss()
             },
             onDismiss = dismiss,

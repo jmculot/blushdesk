@@ -1,9 +1,8 @@
 package com.blushdesk.app.utils
 
 import com.blushdesk.app.data.local.database.Buyer
-import com.blushdesk.app.data.local.database.Order
-import com.blushdesk.app.domain.model.PaymentMode
-import com.blushdesk.app.domain.model.PaymentStatus
+import com.blushdesk.app.data.local.database.OrderItem
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -69,20 +68,27 @@ class ValidationTest {
     }
 
     @Test
-    fun `whole buyer and order records are checked before saving`() {
+    fun `a whole buyer record is checked before saving`() {
         val buyer = Buyer(fullName = "Ana", contactNumber = "0917 123 4567", dateAdded = Instant.EPOCH)
         assertNull(Validation.buyerProblem(buyer))
         assertNotNull(Validation.buyerProblem(buyer.copy(fullName = " ")))
         assertNotNull(Validation.buyerProblem(buyer.copy(contactNumber = "123")))
         assertNotNull(Validation.buyerProblem(buyer.copy(email = "nope")))
+    }
 
-        val order = Order(
-            buyerId = 1, productName = "Sofa", unitPrice = Money.of("10.00"), quantity = 1,
-            purchaseDateTime = Instant.EPOCH, paymentMode = PaymentMode.CASH, paymentStatus = PaymentStatus.UNPAID,
-        )
-        assertNull(Validation.orderProblem(order))
-        assertNotNull(Validation.orderProblem(order.copy(productName = "")))
-        assertNotNull(Validation.orderProblem(order.copy(quantity = 0)))
-        assertNotNull(Validation.orderProblem(order.copy(unitPrice = Money.ZERO)))
+    @Test
+    fun `each product line and the list of lines are checked before saving`() {
+        val item = OrderItem(productName = "Sofa", unitPrice = Money.of("10.00"), quantity = 1)
+        assertNull(Validation.itemProblem(item))
+        assertNotNull(Validation.itemProblem(item.copy(productName = "")))
+        assertNotNull(Validation.itemProblem(item.copy(quantity = 0)))
+        assertNotNull(Validation.itemProblem(item.copy(unitPrice = Money.ZERO)))
+
+        assertNull(Validation.itemsProblem(listOf(item, item.copy(productName = "Lamp"))))
+        assertEquals("Add at least one product", Validation.itemsProblem(emptyList()))
+        assertNotNull(Validation.itemsProblem(List(Validation.MAX_ITEMS + 1) { item }))
+        assertNull(Validation.itemsProblem(List(Validation.MAX_ITEMS) { item }))
+        // One bad line spoils the order.
+        assertNotNull(Validation.itemsProblem(listOf(item, item.copy(quantity = 0))))
     }
 }

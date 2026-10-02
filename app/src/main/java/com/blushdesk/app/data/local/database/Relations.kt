@@ -9,8 +9,9 @@ import java.math.BigDecimal
 /** An order with its product lines, loaded by Room in one transaction. */
 data class OrderWithItems(
     @Embedded val order: Order,
+    /** The lines as Room loads them, unsorted; read [items] instead. */
     @Relation(parentColumn = "id", entityColumn = "orderId")
-    private val itemRows: List<OrderItem>,
+    val itemRows: List<OrderItem>,
 ) {
     /** The lines in the order the operator entered them (a Relation does not sort). */
     val items: List<OrderItem> get() = itemRows.sortedWith(compareBy({ it.position }, { it.id }))

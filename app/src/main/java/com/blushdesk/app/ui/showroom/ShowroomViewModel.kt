@@ -11,6 +11,7 @@ import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.BuyerListItem
 import com.blushdesk.app.data.local.database.OperatorProfile
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
 import com.blushdesk.app.data.local.database.ShowroomSummary
 import com.blushdesk.app.di.AppContainer
 import com.blushdesk.app.domain.model.BuyerDetail
@@ -147,9 +148,9 @@ class ShowroomViewModel(
 
     // ---- Orders -----------------------------------------------------------------------------
 
-    fun saveOrder(order: Order) = act("Couldn't save the order. Please try again.") {
+    fun saveOrder(order: Order, items: List<OrderItem>) = act("Couldn't save the order. Please try again.") {
         val isNew = order.id == 0L
-        val id = repository.saveOrder(order)
+        val id = repository.saveOrder(order, items)
         if (isNew) selectedOrderId.value = id
         emitSuccess(if (isNew) "Order added" else "Order updated")
     }

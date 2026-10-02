@@ -5,6 +5,8 @@ import com.blushdesk.app.data.local.database.BuyerWithOrders
 import com.blushdesk.app.data.local.database.ExportSummary
 import com.blushdesk.app.data.local.database.OperatorProfile
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.domain.model.ExportSnapshot
 import com.blushdesk.app.domain.model.FulfillmentStatus
 import com.blushdesk.app.domain.model.PaymentMode
@@ -42,31 +44,41 @@ class ExcelExporterTest {
     private val ana = Buyer(id = 1, fullName = "Ana Reyes", contactNumber = "0917 123 4567", email = "ana@example.com", dateAdded = Instant.parse("2026-09-01T02:00:00Z"))
     private val ben = Buyer(id = 2, fullName = "Ben Cruz", contactNumber = "0918 765 4321", dateAdded = Instant.parse("2026-09-05T02:00:00Z"))
 
+    private fun item(product: String, unit: String, qty: Int, position: Int = 0) =
+        OrderItem(productName = product, unitPrice = Money.of(unit), quantity = qty, position = position)
+
     private fun order(
-        id: Long, buyer: Buyer, product: String, unit: String, qty: Int, at: String,
-        mode: PaymentMode, pay: PaymentStatus, stage: FulfillmentStatus,
-    ) = Order(
-        id = id, buyerId = buyer.id, productName = product, unitPrice = Money.of(unit), quantity = qty,
-        purchaseDateTime = Instant.parse(at), paymentMode = mode, paymentStatus = pay, fulfillmentStatus = stage,
+        id: Long, buyer: Buyer, at: String, mode: PaymentMode, pay: PaymentStatus, stage: FulfillmentStatus,
+        vararg items: OrderItem,
+    ) = OrderWithItems(
+        Order(
+            id = id, buyerId = buyer.id, totalAmount = items.fold(Money.ZERO) { s, i -> s + i.lineTotal },
+            purchaseDateTime = Instant.parse(at), paymentMode = mode, paymentStatus = pay, fulfillmentStatus = stage,
+        ),
+        items.map { it.copy(orderId = id) },
     )
 
     private val buyers = listOf(
         BuyerWithOrders(
             ana,
             listOf(
-                order(10, ana, "Velvet Sofa", "12500.50", 2, "2026-09-20T03:00:00Z", PaymentMode.ONLINE_PAYMENT, PaymentStatus.PAID, FulfillmentStatus.DELIVERED),
-                order(11, ana, "Side Table", "3500", 1, "2026-10-01T03:00:00Z", PaymentMode.CASH, PaymentStatus.PENDING, FulfillmentStatus.PREPARING),
+                order(10, ana, "2026-09-20T03:00:00Z", PaymentMode.ONLINE_PAYMENT, PaymentStatus.PAID, FulfillmentStatus.DELIVERED, item("Velvet Sofa", "12500.50", 2)),
+                // One order, two products.
+                order(
+                    11, ana, "2026-10-01T03:00:00Z", PaymentMode.CASH, PaymentStatus.PENDING, FulfillmentStatus.PREPARING,
+                    item("Side Table", "3500", 1, position = 0), item("Throw Pillow", "450", 4, position = 1),
+                ),
             ),
         ),
         BuyerWithOrders(
             ben,
-            listOf(order(12, ben, "Floor Lamp", "999.99", 3, "2026-09-25T03:00:00Z", PaymentMode.CASH, PaymentStatus.UNPAID, FulfillmentStatus.PROCESSING)),
+            listOf(order(12, ben, "2026-09-25T03:00:00Z", PaymentMode.CASH, PaymentStatus.UNPAID, FulfillmentStatus.PROCESSING, item("Floor Lamp", "999.99", 3))),
         ),
     )
 
     private val summary = ExportSummary(
         totalBuyers = 2, totalOrders = 3, paidOrders = 1, unpaidOrders = 1, pendingOrders = 1,
-        processingOrders = 1, preparingOrders = 1, deliveredOrders = 1, totalRecordedSales = Money.of("31500.97"),
+        processingOrders = 1, preparingOrders = 1, deliveredOrders = 1, totalRecordedSales = Money.of("33300.97"),
     )
 
     private suspend fun export(snapshotBuyers: List<BuyerWithOrders> = buyers): File = exporter.export(
@@ -99,39 +111,51 @@ class ExcelExporterTest {
             assertEquals("0917 123 4567", sheet.text(1, 2))
             assertEquals("ana@example.com", sheet.text(1, 3))
             assertEquals(2026, sheet.getRow(1).getCell(4).localDateTimeCellValue.year)
-            assertEquals(2.0, sheet.number(1, 5), 0.0)
+            assertEquals(2.0, sheet.number(1, 5), 0.0) // orders, not products
             assertEquals(1.0, sheet.number(2, 5), 0.0)
         }
     }
 
     @Test
-    fun `orders sheet has the specified columns, oldest first, with exact amounts`() = runTest {
+    fun `orders sheet keeps the specified columns plus the order total`() = runTest {
         XSSFWorkbook(export().inputStream()).use { wb ->
-            val sheet = wb.getSheet("Orders")
             assertEquals(
                 listOf(
                     "Order ID", "Buyer ID", "Buyer Name", "Product", "Unit Price", "Quantity", "Total Amount",
-                    "Purchase Date", "Purchase Time", "Payment Mode", "Payment Status", "Fulfillment Status",
+                    "Purchase Date", "Purchase Time", "Payment Mode", "Payment Status", "Fulfillment Status", "Order Total",
                 ),
-                sheet.headers(12),
+                wb.getSheet("Orders").headers(13),
             )
-            assertEquals(3, sheet.lastRowNum)
-            // Chronological: Sofa (Sep 20), Lamp (Sep 25), Side Table (Oct 1).
-            assertEquals(listOf("Velvet Sofa", "Floor Lamp", "Side Table"), (1..3).map { sheet.text(it, 3) })
+        }
+    }
 
-            assertEquals(10.0, sheet.number(1, 0), 0.0)
-            assertEquals(1.0, sheet.number(1, 1), 0.0)
-            assertEquals("Ana Reyes", sheet.text(1, 2))
+    @Test
+    fun `orders sheet has one row per product line, orders oldest first`() = runTest {
+        XSSFWorkbook(export().inputStream()).use { wb ->
+            val sheet = wb.getSheet("Orders")
+            assertEquals(4, sheet.lastRowNum) // 1 + 1 + 2 product lines
+            // Chronological by order: Sofa (Sep 20), Lamp (Sep 25), then both lines of the Oct 1 order in entry order.
+            assertEquals(listOf("Velvet Sofa", "Floor Lamp", "Side Table", "Throw Pillow"), (1..4).map { sheet.text(it, 3) })
+            assertEquals(listOf(10.0, 12.0, 11.0, 11.0), (1..4).map { sheet.number(it, 0) })
+
+            // The sofa line: unit price x quantity, and the order total equals it.
             assertEquals(12_500.50, sheet.number(1, 4), 0.0)
             assertEquals(2.0, sheet.number(1, 5), 0.0)
             assertEquals(25_001.00, sheet.number(1, 6), 0.0)
+            assertEquals(25_001.00, sheet.number(1, 12), 0.0)
             assertEquals("Online payment", sheet.text(1, 9))
             assertEquals("Paid", sheet.text(1, 10))
             assertEquals("Delivered", sheet.text(1, 11))
 
+            // The two-product order: each line has its own total, both rows carry the order total.
+            assertEquals(3_500.00, sheet.number(3, 6), 0.0)
+            assertEquals(1_800.00, sheet.number(4, 6), 0.0) // 450 x 4
+            assertEquals(5_300.00, sheet.number(3, 12), 0.0)
+            assertEquals(5_300.00, sheet.number(4, 12), 0.0)
+            assertEquals("Pending", sheet.text(4, 10))
+            assertEquals("Ana Reyes", sheet.text(4, 2))
+
             assertEquals(2_999.97, sheet.number(2, 6), 0.0) // 999.99 x 3, exact
-            assertEquals("Unpaid", sheet.text(2, 10))
-            assertEquals("Processing", sheet.text(2, 11))
         }
     }
 
@@ -185,7 +209,7 @@ class ExcelExporterTest {
             assertEquals(2.0, figures.getValue("Total Buyers"), 0.0)
             assertEquals(3.0, figures.getValue("Total Orders"), 0.0)
             assertEquals(1.0, figures.getValue("Delivered Orders"), 0.0)
-            assertEquals(31_500.97, figures.getValue("Total Recorded Sales"), 0.0)
+            assertEquals(33_300.97, figures.getValue("Total Recorded Sales"), 0.0)
         }
     }
 

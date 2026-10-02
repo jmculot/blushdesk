@@ -4,7 +4,9 @@ import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.BuyerListItem
 import com.blushdesk.app.data.local.database.OperatorProfile
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
 import com.blushdesk.app.data.local.database.OrderTotals
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.data.local.database.ShowroomSummary
 import com.blushdesk.app.domain.model.ExportSnapshot
 import com.blushdesk.app.domain.model.FulfillmentStatus
@@ -25,12 +27,12 @@ interface ShowroomRepository {
 
     fun searchBuyers(query: String): Flow<List<BuyerListItem>>
     fun observeBuyer(buyerId: Long): Flow<Buyer?>
-    fun observeOrders(buyerId: Long): Flow<List<Order>>
+    fun observeOrders(buyerId: Long): Flow<List<OrderWithItems>>
     fun observeOrderTotals(buyerId: Long): Flow<OrderTotals>
 
     suspend fun getOperator(): OperatorProfile
     suspend fun getBuyer(buyerId: Long): Buyer?
-    suspend fun getOrder(orderId: Long): Order?
+    suspend fun getOrder(orderId: Long): OrderWithItems?
     suspend fun getExportSnapshot(): ExportSnapshot
 
     suspend fun saveOperator(profile: OperatorProfile)
@@ -39,8 +41,11 @@ interface ShowroomRepository {
     suspend fun saveBuyer(buyer: Buyer): Long
     suspend fun deleteBuyer(buyerId: Long)
 
-    /** Inserts when [Order.id] is 0, otherwise updates; the total is always recomputed. Returns the id. */
-    suspend fun saveOrder(order: Order): Long
+    /**
+     * Inserts when [Order.id] is 0, otherwise updates, together with its product lines (which
+     * replace any previous ones). Line totals and the order total are always recomputed. Returns the id.
+     */
+    suspend fun saveOrder(order: Order, items: List<OrderItem>): Long
     suspend fun deleteOrder(orderId: Long)
     suspend fun setFulfillmentStatus(orderId: Long, status: FulfillmentStatus)
     suspend fun setPaymentStatus(orderId: Long, status: PaymentStatus)

@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.blushdesk.app.data.local.database.AppDatabase
 import com.blushdesk.app.data.local.database.MIGRATION_1_2
+import com.blushdesk.app.data.local.database.MIGRATION_2_3
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -92,6 +93,77 @@ class MigrationTest {
         db.query("SELECT COUNT(*) FROM orders").use { c ->
             c.moveToFirst()
             assertEquals(0, c.getInt(0))
+        }
+        db.close()
+    }
+
+    @Test
+    fun migrate_2_to_3_turns_each_order_into_an_order_with_one_item() {
+        helper.createDatabase(dbName, 2).apply {
+            execSQL(
+                "INSERT INTO buyers (id, fullName, contactNumber, email, dateAdded, profileImageUri, createdAt, updatedAt) " +
+                    "VALUES (7, 'Ana Reyes', '0917 123 4567', '', 1759276800000, NULL, 1759276800000, 1759276800000)",
+            )
+            execSQL(
+                "INSERT INTO orders (id, buyerId, productName, unitPrice, quantity, totalAmount, purchaseDateTime, " +
+                    "paymentMode, paymentStatus, fulfillmentStatus, createdAt, updatedAt) " +
+                    "VALUES (42, 7, 'Velvet Sofa', 99999, 3, 299997, 1759363200000, 'CASH', 'PAID', 'DELIVERED', 1, 2)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(dbName, 3, true, MIGRATION_2_3)
+
+        db.query("SELECT id, buyerId, totalAmount, paymentStatus, fulfillmentStatus, createdAt, updatedAt FROM orders").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(42L, c.getLong(0))
+            assertEquals(7L, c.getLong(1))
+            assertEquals(299997L, c.getLong(2)) // the total is unchanged
+            assertEquals("PAID", c.getString(3))
+            assertEquals("DELIVERED", c.getString(4))
+            assertEquals(1L, c.getLong(5))
+            assertEquals(2L, c.getLong(6))
+        }
+        db.query("SELECT orderId, position, productName, unitPrice, quantity, lineTotal FROM order_items").use { c ->
+            assertEquals(1, c.count)
+            c.moveToFirst()
+            assertEquals(42L, c.getLong(0))
+            assertEquals(0, c.getInt(1))
+            assertEquals("Velvet Sofa", c.getString(2))
+            assertEquals(99999L, c.getLong(3))
+            assertEquals(3, c.getInt(4))
+            assertEquals(299997L, c.getLong(5))
+        }
+
+        // Deleting the order still removes its item through the new foreign key.
+        db.execSQL("PRAGMA foreign_keys = ON")
+        db.execSQL("DELETE FROM orders WHERE id = 42")
+        db.query("SELECT COUNT(*) FROM order_items").use { c ->
+            c.moveToFirst()
+            assertEquals(0, c.getInt(0))
+        }
+        db.close()
+    }
+
+    @Test
+    fun first_release_data_survives_both_migrations() {
+        helper.createDatabase(dbName, 1).apply {
+            execSQL("INSERT INTO buyers (id, fullName, contact, email, dateAdded, photoPath) VALUES (1, 'Ben', '0918 765 4321', '', 1000, NULL)")
+            execSQL(
+                "INSERT INTO orders (id, buyerId, productName, unitPriceMinor, quantity, purchasedAt, paymentMode, paymentStatus, orderStatus) " +
+                    "VALUES (5, 1, 'Floor Lamp', 99999, 3, 2000, 'ONLINE', 'UNPAID', 'PROCESSING')",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(dbName, 3, true, MIGRATION_1_2, MIGRATION_2_3)
+
+        db.query("SELECT o.totalAmount, o.paymentMode, i.productName, i.lineTotal FROM orders o JOIN order_items i ON i.orderId = o.id").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(299997L, c.getLong(0))
+            assertEquals("ONLINE_PAYMENT", c.getString(1))
+            assertEquals("Floor Lamp", c.getString(2))
+            assertEquals(299997L, c.getLong(3))
         }
         db.close()
     }

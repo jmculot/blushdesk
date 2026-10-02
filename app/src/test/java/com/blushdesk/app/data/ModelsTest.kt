@@ -2,6 +2,8 @@ package com.blushdesk.app.data
 
 import com.blushdesk.app.data.local.database.Converters
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.data.repository.OfflineShowroomRepository
 import com.blushdesk.app.domain.model.FulfillmentStatus
 import com.blushdesk.app.domain.model.PaymentMode
@@ -38,12 +40,24 @@ class ModelsTest {
     }
 
     @Test
-    fun `a new order computes its total from price and quantity`() {
+    fun `a product line computes its total from price and quantity`() {
+        val item = OrderItem(productName = "Lamp", unitPrice = Money.of("0.10"), quantity = 3)
+        assertEquals(BigDecimal("0.30"), item.lineTotal)
+    }
+
+    @Test
+    fun `order items come back in entry order and count their units`() {
         val order = Order(
-            buyerId = 1, productName = "Lamp", unitPrice = Money.of("0.10"), quantity = 3,
-            purchaseDateTime = Instant.EPOCH, paymentMode = PaymentMode.CASH, paymentStatus = PaymentStatus.PAID,
+            id = 1, buyerId = 1, purchaseDateTime = Instant.EPOCH,
+            paymentMode = PaymentMode.CASH, paymentStatus = PaymentStatus.PAID,
         )
-        assertEquals(BigDecimal("0.30"), order.totalAmount)
+        val rows = listOf(
+            OrderItem(id = 7, orderId = 1, position = 1, productName = "Second", unitPrice = Money.of("1.00"), quantity = 2),
+            OrderItem(id = 9, orderId = 1, position = 0, productName = "First", unitPrice = Money.of("1.00"), quantity = 3),
+        )
+        val withItems = OrderWithItems(order, rows)
+        assertEquals(listOf("First", "Second"), withItems.items.map { it.productName })
+        assertEquals(5, withItems.unitCount)
         assertEquals(order.purchaseDateTime, order.createdAt)
     }
 

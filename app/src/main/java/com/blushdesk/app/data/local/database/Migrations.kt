@@ -94,3 +94,53 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_orders_buyerId` ON `orders` (`buyerId`)")
     }
 }
+
+/**
+ * Version 2 -> 3: an order can hold several products. The product columns move out of `orders`
+ * into a new `order_items` table; every existing order becomes an order with one item, so nothing
+ * is lost and every total stays the same.
+ */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE `orders_new` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `buyerId` INTEGER NOT NULL,
+                `totalAmount` INTEGER NOT NULL, `purchaseDateTime` INTEGER NOT NULL,
+                `paymentMode` TEXT NOT NULL, `paymentStatus` TEXT NOT NULL, `fulfillmentStatus` TEXT NOT NULL,
+                `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL,
+                FOREIGN KEY(`buyerId`) REFERENCES `buyers`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            INSERT INTO `orders_new`
+                (id, buyerId, totalAmount, purchaseDateTime, paymentMode, paymentStatus, fulfillmentStatus, createdAt, updatedAt)
+            SELECT id, buyerId, totalAmount, purchaseDateTime, paymentMode, paymentStatus, fulfillmentStatus, createdAt, updatedAt
+            FROM `orders`
+            """.trimIndent(),
+        )
+
+        // References `orders` by its final name, which the renamed orders_new takes below.
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `order_items` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `orderId` INTEGER NOT NULL,
+                `position` INTEGER NOT NULL, `productName` TEXT NOT NULL, `unitPrice` INTEGER NOT NULL,
+                `quantity` INTEGER NOT NULL, `lineTotal` INTEGER NOT NULL,
+                FOREIGN KEY(`orderId`) REFERENCES `orders`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            INSERT INTO `order_items` (orderId, position, productName, unitPrice, quantity, lineTotal)
+            SELECT id, 0, productName, unitPrice, quantity, totalAmount FROM `orders`
+            """.trimIndent(),
+        )
+
+        db.execSQL("DROP TABLE `orders`")
+        db.execSQL("ALTER TABLE `orders_new` RENAME TO `orders`")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_orders_buyerId` ON `orders` (`buyerId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_order_items_orderId` ON `order_items` (`orderId`)")
+    }
+}

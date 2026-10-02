@@ -19,32 +19,41 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.ui.theme.Dimens
 import com.blushdesk.app.ui.theme.ShowroomTheme
 import com.blushdesk.app.utils.Formats
 import com.blushdesk.app.utils.Money
 
-/** Product, "qty x price · receipt number", and the total. Shared by the compact and detailed cards. */
+/**
+ * What was bought and the total. One product reads "Velvet Sofa / 2 × ₱12,500.50"; several read
+ * "Velvet Sofa + 2 more / 3 items · 5 units". Shared by the compact and detailed order cards.
+ */
 @Composable
-fun OrderHeadline(order: Order, modifier: Modifier = Modifier) {
+fun OrderHeadline(order: OrderWithItems, modifier: Modifier = Modifier) {
+    val items = order.items
+    val single = items.singleOrNull()
     Row(modifier = modifier, verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(Dimens.spaceM)) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                text = order.productName,
+                text = Formats.itemsSummary(items.map { it.productName }),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "${order.quantity} × ${Money.format(order.unitPrice)}  ·  ${Formats.orderNumber(order.id)}",
+                text = if (single != null) {
+                    "${single.quantity} × ${Money.format(single.unitPrice)}"
+                } else {
+                    "${items.size} items · ${order.unitCount} units"
+                } + "  ·  ${Formats.orderNumber(order.order.id)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         AmountText(
-            text = Money.format(order.totalAmount),
+            text = Money.format(order.order.totalAmount),
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.secondary,
         )
@@ -57,7 +66,7 @@ fun OrderHeadline(order: Order, modifier: Modifier = Modifier) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun OrderCard(order: Order, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun OrderCard(order: OrderWithItems, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         onClick = onClick,
         modifier = modifier.semantics { onClick(label = "Show order details") { onClick(); true } },
@@ -68,9 +77,9 @@ fun OrderCard(order: Order, onClick: () -> Unit, modifier: Modifier = Modifier) 
         Column(modifier = Modifier.padding(Dimens.spaceL), verticalArrangement = Arrangement.spacedBy(Dimens.spaceM)) {
             OrderHeadline(order)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimens.spaceS), verticalArrangement = Arrangement.spacedBy(Dimens.spaceS)) {
-                StatusBadge(Formats.dateTime(order.purchaseDateTime), ShowroomTheme.colors.neutralBadge, icon = Icons.Filled.Schedule)
-                FulfillmentStatusBadge(order.fulfillmentStatus)
-                PaymentStatusBadge(order.paymentStatus)
+                StatusBadge(Formats.dateTime(order.order.purchaseDateTime), ShowroomTheme.colors.neutralBadge, icon = Icons.Filled.Schedule)
+                FulfillmentStatusBadge(order.order.fulfillmentStatus)
+                PaymentStatusBadge(order.order.paymentStatus)
             }
         }
     }

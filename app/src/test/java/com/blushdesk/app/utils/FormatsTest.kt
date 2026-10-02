@@ -40,6 +40,14 @@ class FormatsTest {
     }
 
     @Test
+    fun `an order is summarised by its first product and a count of the rest`() {
+        assertEquals("Sofa", Formats.itemsSummary(listOf("Sofa")))
+        assertEquals("Sofa + 1 more", Formats.itemsSummary(listOf("Sofa", "Lamp")))
+        assertEquals("Sofa + 3 more", Formats.itemsSummary(listOf("Sofa", "Lamp", "Rug", "Vase")))
+        assertEquals("No items", Formats.itemsSummary(emptyList()))
+    }
+
+    @Test
     fun `initials use first and last word`() {
         assertEquals("AR", Formats.initials("Ana Reyes"))
         assertEquals("AD", Formats.initials("Ana Maria dela Cruz Dizon"))

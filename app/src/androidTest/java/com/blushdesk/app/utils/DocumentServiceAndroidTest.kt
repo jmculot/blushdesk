@@ -61,7 +61,7 @@ class DocumentServiceAndroidTest {
     private fun seed(paid: PaymentStatus): Pair<Long, Long> = runBlocking {
         repository.saveOperator(TestData.operator)
         val buyerId = repository.saveBuyer(TestData.buyer("Ana Reyes"))
-        val orderId = repository.saveOrder(TestData.order(buyerId, pay = paid))
+        val orderId = repository.saveOrder(TestData.order(buyerId, pay = paid), listOf(TestData.item(), TestData.item("Throw Pillow", "450", 4)))
         buyerId to orderId
     }
 

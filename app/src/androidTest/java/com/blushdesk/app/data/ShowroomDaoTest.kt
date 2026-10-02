@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteConstraintException
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.blushdesk.app.TestData
+import com.blushdesk.app.TestData.addOrder
 import com.blushdesk.app.data.local.database.AppDatabase
 import com.blushdesk.app.data.local.database.ShowroomDao
 import com.blushdesk.app.data.repository.OfflineShowroomRepository
@@ -59,9 +60,11 @@ class ShowroomDaoTest {
     @Test
     fun order_round_trips_money_enums_and_time_exactly() = runBlocking {
         val buyerId = dao.insertBuyer(TestData.buyer())
-        val orderId = dao.insertOrder(TestData.order(buyerId, unit = "999.99", qty = 3))
+        val orderId = dao.addOrder(buyerId, unit = "999.99", qty = 3)
         val loaded = dao.getOrder(orderId)!!
-        assertEquals(BigDecimal("999.99"), loaded.unitPrice)
+        val line = dao.getOrderWithItems(orderId)!!.items.single()
+        assertEquals(BigDecimal("999.99"), line.unitPrice)
+        assertEquals(BigDecimal("2999.97"), line.lineTotal)
         assertEquals(BigDecimal("2999.97"), loaded.totalAmount)
         assertEquals(PaymentStatus.PAID, loaded.paymentStatus)
         assertEquals(FulfillmentStatus.DELIVERED, loaded.fulfillmentStatus)
@@ -72,9 +75,9 @@ class ShowroomDaoTest {
     fun deleting_a_buyer_cascades_to_their_orders_only() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         val ben = dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana))
-        dao.insertOrder(TestData.order(ana, product = "Chair"))
-        val bensOrder = dao.insertOrder(TestData.order(ben))
+        dao.addOrder(ana)
+        dao.addOrder(ana, product = "Chair")
+        val bensOrder = dao.addOrder(ben)
 
         dao.deleteBuyer(ana)
 
@@ -86,7 +89,7 @@ class ShowroomDaoTest {
     @Test
     fun an_order_for_a_missing_buyer_is_rejected_by_the_foreign_key() = runBlocking {
         try {
-            dao.insertOrder(TestData.order(buyerId = 999))
+            dao.insertOrder(TestData.order(buyerId = 999)) // header only: no buyer 999
             fail("expected the foreign key to reject an orphan order")
         } catch (_: SQLiteConstraintException) {
             // expected
@@ -105,8 +108,8 @@ class ShowroomDaoTest {
     @Test
     fun targeted_updates_change_one_order_and_stamp_updated_at() = runBlocking {
         val buyer = dao.insertBuyer(TestData.buyer())
-        val target = dao.insertOrder(TestData.order(buyer, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PROCESSING))
-        val other = dao.insertOrder(TestData.order(buyer, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PROCESSING))
+        val target = dao.addOrder(buyer, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PROCESSING)
+        val other = dao.addOrder(buyer, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PROCESSING)
         val later = Instant.parse("2026-10-05T00:00:00Z")
 
         dao.updateFulfillmentStatus(target, FulfillmentStatus.PREPARING, later)
@@ -126,8 +129,8 @@ class ShowroomDaoTest {
     fun buyer_list_shows_order_count_and_the_latest_orders_statuses() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED, at = "2026-09-01T00:00:00Z"))
-        dao.insertOrder(TestData.order(ana, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING, at = "2026-10-01T00:00:00Z"))
+        dao.addOrder(ana, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED, at = "2026-09-01T00:00:00Z")
+        dao.addOrder(ana, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING, at = "2026-10-01T00:00:00Z")
 
         val list = dao.searchBuyers("%").first()
 
@@ -167,17 +170,17 @@ class ShowroomDaoTest {
     @Test
     fun buyer_orders_are_newest_first() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer())
-        dao.insertOrder(TestData.order(ana, product = "Old", at = "2026-09-01T00:00:00Z"))
-        dao.insertOrder(TestData.order(ana, product = "New", at = "2026-10-01T00:00:00Z"))
-        assertEquals(listOf("New", "Old"), dao.observeOrdersForBuyer(ana).first().map { it.productName })
+        dao.addOrder(ana, product = "Old", at = "2026-09-01T00:00:00Z")
+        dao.addOrder(ana, product = "New", at = "2026-10-01T00:00:00Z")
+        assertEquals(listOf("New", "Old"), dao.observeOrdersForBuyer(ana).first().map { it.items.first().productName })
     }
 
     @Test
     fun order_totals_split_paid_from_outstanding() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer())
-        dao.insertOrder(TestData.order(ana, unit = "1000.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED))
-        dao.insertOrder(TestData.order(ana, unit = "500.00", qty = 2, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING))
-        dao.insertOrder(TestData.order(ana, unit = "100.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+        dao.addOrder(ana, unit = "1000.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED)
+        dao.addOrder(ana, unit = "500.00", qty = 2, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING)
+        dao.addOrder(ana, unit = "100.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING)
 
         val totals = dao.observeOrderTotals(ana).first()
 
@@ -199,22 +202,22 @@ class ShowroomDaoTest {
     @Test
     fun orders_can_be_retrieved_by_payment_and_by_fulfillment_status() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer())
-        dao.insertOrder(TestData.order(ana, product = "A", pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
-        dao.insertOrder(TestData.order(ana, product = "B", pay = PaymentStatus.PAID, stage = FulfillmentStatus.PREPARING))
-        dao.insertOrder(TestData.order(ana, product = "C", pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PREPARING))
+        val a = dao.addOrder(ana, product = "A", pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING)
+        val b = dao.addOrder(ana, product = "B", pay = PaymentStatus.PAID, stage = FulfillmentStatus.PREPARING)
+        val c = dao.addOrder(ana, product = "C", pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PREPARING)
 
-        assertEquals(listOf("A", "C"), dao.observeOrdersByPaymentStatus(PaymentStatus.UNPAID).first().map { it.productName })
-        assertEquals(listOf("B"), dao.observeOrdersByPaymentStatus(PaymentStatus.PAID).first().map { it.productName })
-        assertEquals(listOf("B", "C"), dao.observeOrdersByFulfillmentStatus(FulfillmentStatus.PREPARING).first().map { it.productName })
-        assertEquals(emptyList<String>(), dao.observeOrdersByFulfillmentStatus(FulfillmentStatus.DELIVERED).first().map { it.productName })
+        assertEquals(listOf(a, c), dao.observeOrdersByPaymentStatus(PaymentStatus.UNPAID).first().map { it.id })
+        assertEquals(listOf(b), dao.observeOrdersByPaymentStatus(PaymentStatus.PAID).first().map { it.id })
+        assertEquals(listOf(b, c), dao.observeOrdersByFulfillmentStatus(FulfillmentStatus.PREPARING).first().map { it.id })
+        assertEquals(emptyList<Long>(), dao.observeOrdersByFulfillmentStatus(FulfillmentStatus.DELIVERED).first().map { it.id })
     }
 
     @Test
     fun showroom_summary_counts_buyers_orders_and_amounts() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana, unit = "2000.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED))
-        dao.insertOrder(TestData.order(ana, unit = "50.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+        dao.addOrder(ana, unit = "2000.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED)
+        dao.addOrder(ana, unit = "50.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING)
 
         val summary = dao.observeShowroomSummary().first()
 
@@ -229,10 +232,10 @@ class ShowroomDaoTest {
     fun export_summary_counts_every_status_and_total_sales() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana, unit = "100.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED))
-        dao.insertOrder(TestData.order(ana, unit = "200.00", qty = 1, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING))
-        dao.insertOrder(TestData.order(ana, unit = "300.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
-        dao.insertOrder(TestData.order(ana, unit = "400.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING))
+        dao.addOrder(ana, unit = "100.00", qty = 1, pay = PaymentStatus.PAID, stage = FulfillmentStatus.DELIVERED)
+        dao.addOrder(ana, unit = "200.00", qty = 1, pay = PaymentStatus.PENDING, stage = FulfillmentStatus.PREPARING)
+        dao.addOrder(ana, unit = "300.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING)
+        dao.addOrder(ana, unit = "400.00", qty = 1, pay = PaymentStatus.UNPAID, stage = FulfillmentStatus.PROCESSING)
 
         val s = dao.getExportSummary()
 
@@ -251,14 +254,76 @@ class ShowroomDaoTest {
     fun relation_returns_each_buyers_own_orders() = runBlocking {
         val ana = dao.insertBuyer(TestData.buyer("Ana"))
         val ben = dao.insertBuyer(TestData.buyer("Ben"))
-        dao.insertOrder(TestData.order(ana, product = "Sofa"))
-        dao.insertOrder(TestData.order(ana, product = "Table"))
-        dao.insertOrder(TestData.order(ben, product = "Lamp"))
+        dao.addOrder(ana, product = "Sofa")
+        dao.addOrder(ana, product = "Table")
+        dao.addOrder(ben, product = "Lamp")
 
         val all = dao.getAllBuyersWithOrders()
         assertEquals(listOf("Ana", "Ben"), all.map { it.buyer.fullName })
-        assertEquals(setOf("Sofa", "Table"), all[0].orders.map { it.productName }.toSet())
-        assertEquals(listOf("Lamp"), all[1].orders.map { it.productName })
+        assertEquals(setOf("Sofa", "Table"), all[0].orders.map { it.items.single().productName }.toSet())
+        assertEquals(listOf("Lamp"), all[1].orders.map { it.items.single().productName })
+    }
+
+    // ---- Order items -------------------------------------------------------------------------
+
+    private fun count(table: String): Int =
+        db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $table").use { it.moveToFirst(); it.getInt(0) }
+
+    @Test
+    fun an_order_keeps_several_items_in_entry_order() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer())
+        val id = dao.addOrder(ana, items = listOf(TestData.item("Sofa", "100.00", 1), TestData.item("Pillow", "20.00", 3), TestData.item("Rug", "50.00", 1)))
+
+        val loaded = dao.getOrderWithItems(id)!!
+        assertEquals(listOf("Sofa", "Pillow", "Rug"), loaded.items.map { it.productName })
+        assertEquals(listOf(0, 1, 2), loaded.items.map { it.position })
+        assertEquals(Money.of("210.00"), loaded.order.totalAmount)
+        assertEquals(5, loaded.unitCount)
+        assertEquals(3, dao.observeOrdersForBuyer(ana).first().single().items.size)
+    }
+
+    @Test
+    fun deleting_an_order_deletes_its_items_and_deleting_a_buyer_deletes_both() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer("Ana"))
+        val first = dao.addOrder(ana, items = listOf(TestData.item("A"), TestData.item("B")))
+        dao.addOrder(ana, items = listOf(TestData.item("C")))
+        assertEquals(3, count("order_items"))
+
+        dao.deleteOrder(first)
+        assertEquals(1, count("order_items"))
+
+        dao.deleteBuyer(ana)
+        assertEquals(0, count("orders"))
+        assertEquals(0, count("order_items"))
+    }
+
+    @Test
+    fun an_item_for_a_missing_order_is_rejected_by_the_foreign_key() = runBlocking {
+        try {
+            dao.insertItems(listOf(TestData.item(orderId = 999)))
+            fail("expected the foreign key to reject an orphan item")
+        } catch (_: SQLiteConstraintException) {
+            // expected
+        }
+    }
+
+    @Test
+    fun replacing_an_orders_items_leaves_only_the_new_ones() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer())
+        val id = dao.addOrder(ana, items = listOf(TestData.item("Old 1"), TestData.item("Old 2")))
+
+        dao.deleteItemsOfOrder(id)
+        dao.insertItems(listOf(TestData.item("New", orderId = id)))
+
+        assertEquals(listOf("New"), dao.getOrderWithItems(id)!!.items.map { it.productName })
+    }
+
+    @Test
+    fun export_relation_nests_items_inside_orders_inside_buyers() = runBlocking {
+        val ana = dao.insertBuyer(TestData.buyer("Ana"))
+        dao.addOrder(ana, items = listOf(TestData.item("Sofa"), TestData.item("Lamp")))
+        val nested = dao.getAllBuyersWithOrders().single().orders.single()
+        assertEquals(listOf("Sofa", "Lamp"), nested.items.map { it.productName })
     }
 
     @Test

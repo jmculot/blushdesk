@@ -19,23 +19,25 @@ profile photo). The date added is set automatically. Each row in the buyer list 
 name, contact number, number of orders, and the fulfillment and payment status of the latest
 order. Deleting a buyer deletes their orders too, after a confirmation.
 
-**Orders.** Each order records the product, unit price and quantity. The total amount is always
-calculated as unit price × quantity and is never typed in. It also records the purchase date and
-time (pickers), the payment mode (Cash or Online payment) and the payment status (Unpaid, Pending
-or Paid). Money is a `BigDecimal` with two decimals, stored as whole centavos, so totals never
-pick up rounding errors. "Online payment" only records how the buyer paid. The app never makes a
-transaction.
+**Orders.** An order holds one or more products, up to 30. Each line has a product name, unit
+price and quantity. The line total (unit price × quantity) and the order total (the sum of the
+lines) are calculated as you type and are never typed in. An order also records the purchase
+date and time (pickers), the payment mode (Cash or Online payment) and the payment status
+(Unpaid, Pending or Paid). Money is a `BigDecimal` with two decimals, stored as whole centavos,
+so totals never pick up rounding errors. "Online payment" only records how the buyer paid. The
+app never makes a transaction.
 
-**Order history and lifecycle.** The buyer's orders are listed newest first. The selected order
-expands to show its purchase and payment details and a Processing → Preparing → Delivered
-progress component. One tap on "Move to …" advances it a single stage. Tapping a stage sets it
+**Order history and lifecycle.** The buyer's orders are listed newest first; a multi-product
+order reads "Velvet Sofa + 2 more". The selected order expands to show every product line, its
+purchase and payment details and a Processing → Preparing → Delivered progress component. One tap on "Move to …" advances it a single stage. Tapping a stage sets it
 directly, which is how a mis-tap is undone. Delivered orders turn green.
 
 **PDF receipts.** Only paid orders can get one. The button stays disabled with an explanation
 otherwise, and the generator itself refuses unpaid orders. The A4 receipt has:
 - the showroom details (operator, store, email, phone)
 - the buyer's details
-- an itemized line with unit price, quantity and total
+- one itemized row per product with unit price, quantity and line total; long orders continue
+  on further pages under a compact header, with "Page x of y"
 - purchase date and time, payment method, payment status and fulfillment status
 - a semi-transparent PAID stamp
 
@@ -49,14 +51,16 @@ Files, Quick Share, ...):
 | Sheet    | Columns / contents |
 |----------|--------------------|
 | Buyers   | Buyer ID, Full Name, Contact Number, Email, Date Added, Number of Orders |
-| Orders   | Order ID, Buyer ID, Buyer Name, Product, Unit Price, Quantity, Total Amount, Purchase Date, Purchase Time, Payment Mode, Payment Status, Fulfillment Status |
+| Orders   | One row per product line: Order ID, Buyer ID, Buyer Name, Product, Unit Price, Quantity, Total Amount (that line), Purchase Date, Purchase Time, Payment Mode, Payment Status, Fulfillment Status, plus Order Total |
 | Operator | Operator Name, Store Name, Email, Phone Number |
 | Summary  | Total Buyers, Total Orders, Paid / Unpaid / Pending Orders, Processing / Preparing / Delivered Orders, Total Recorded Sales |
 
-Headers are styled and frozen, the Buyers and Orders tables have filters, money uses a peso
-currency format, dates and times are real Excel dates, and status cells are color coded.
+The Orders sheet keeps the specification's twelve columns. "Order Total" was added when orders
+gained several products, so each row also shows its whole order's total. Headers are styled and
+frozen, the Buyers and Orders tables have filters, money uses a peso currency format, dates and
+times are real Excel dates, and status cells are color coded.
 
-| New order with live total | Export dialog | Paid receipt | Share sheet |
+| New order with several products | Export dialog | Paid receipt | Share sheet |
 |---|---|---|---|
 | ![Order dialog](docs/screenshots/order-dialog.png) | ![Export dialog](docs/screenshots/export-dialog.png) | ![Receipt](docs/screenshots/receipt.png) | ![Share sheet](docs/screenshots/excel-share.png) |
 
@@ -126,18 +130,19 @@ run on the JVM with fakes.
 ### Database
 
 ```
-operator_profile (one active row)   buyers 1 ──── * orders
-  fullName, storeName, email,          id, fullName,           id, buyerId (FK, ON DELETE CASCADE),
-  phoneNumber, profileImageUri,        contactNumber, email,   productName, unitPrice, quantity,
-  createdAt, updatedAt                 dateAdded,              totalAmount, purchaseDateTime,
-                                       profileImageUri,        paymentMode, paymentStatus,
-                                       createdAt, updatedAt    fulfillmentStatus, createdAt, updatedAt
+operator_profile (one active row)   buyers 1 ──── * orders 1 ──────────────── * order_items
+  fullName, storeName, email,          id, fullName,           id, buyerId (FK, CASCADE),     id, orderId (FK, CASCADE),
+  phoneNumber, profileImageUri,        contactNumber, email,   totalAmount, purchaseDateTime, position, productName,
+  createdAt, updatedAt                 dateAdded,              paymentMode, paymentStatus,    unitPrice, quantity,
+                                       profileImageUri,        fulfillmentStatus,             lineTotal
+                                       createdAt, updatedAt    createdAt, updatedAt
 ```
 
 - Money is `BigDecimal` in code and centavos (INTEGER) in SQLite, so SQL `SUM()` is exact. A third
   decimal is rejected, never rounded.
-- `totalAmount` is stored for reporting but recomputed from unit price × quantity on every save.
-  `createdAt` / `updatedAt` are stamped by the repository.
+- `lineTotal` (unit price × quantity) and `totalAmount` (sum of lines) are stored for reporting
+  but recomputed on every save. An order and its lines are written in one transaction, and editing
+  an order replaces its lines. `createdAt` / `updatedAt` are stamped by the repository.
 - Enums are stored by name, so reordering them cannot relabel old rows.
 - The DAO has explicit queries for:
   - CRUD
@@ -146,9 +151,11 @@ operator_profile (one active row)   buyers 1 ──── * orders
   - order totals
   - orders by payment status and by fulfillment status
   - the export data
-- The schema is exported to `app/schemas/`. Version 1 → 2 (the move to this specification's field
-  names) is a hand-written migration, tested with Room's `MigrationTestHelper`. There is
-  deliberately no destructive fallback: this is the shop's only copy of its records.
+- The schema is exported to `app/schemas/`. Two hand-written migrations are tested with Room's
+  `MigrationTestHelper`:
+  - version 1 → 2 moved to this specification's field names
+  - version 2 → 3 moved products into `order_items`; each old order becomes an order with one line
+- There is deliberately no destructive fallback: this is the shop's only copy of its records.
 
 ## Permissions, files and privacy
 
@@ -202,8 +209,8 @@ On first launch the app asks for the operator's profile.
 ## Tests
 
 ```bash
-./gradlew :app:testDebugUnitTest            # 60 JVM tests, no device needed
-./gradlew :app:connectedDebugAndroidTest    # 50 tests on a running emulator or device
+./gradlew :app:testDebugUnitTest            # 66 JVM tests, no device needed
+./gradlew :app:connectedDebugAndroidTest    # 60 tests on a running emulator or device
 ```
 
 - **Unit tests:**
@@ -213,7 +220,7 @@ On first launch the app asks for the operator's profile.
   - the view model against fakes: selection, order expansion, totals, lifecycle, deletes, friendly errors, exports
 - **Instrumented tests:**
   - every DAO query on real SQLite (cascade delete, foreign keys, latest-order status, totals, status lists, export summary, search with `%` and `_`)
-  - the v1 → v2 migration
+  - the v1 → v2 → v3 migrations
   - the repository rules (recomputed totals, timestamps, validation, photo cleanup)
   - Apache POI on Android's runtime
   - PDF generation rendered back to pixels
@@ -232,7 +239,6 @@ can look at the output.
 - **Release builds** run without R8 shrinking, so the unsigned release APK is about 70 MB. Apache
   POI loads schema classes by name; `app/proguard-rules.pro` has a starting set of keep rules,
   but shrinking has not been verified, so it is off. No release signing is configured.
-- **One product per order**, as the data model specifies, so a receipt has one line item.
 - **Light theme only**, on purpose: the pink palette is the brand.
 - **Test coverage:** tested on an Android 15 (API 35) tablet emulator, not yet on an Android 16+
   device or real hardware.

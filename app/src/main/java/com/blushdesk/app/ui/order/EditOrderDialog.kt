@@ -2,12 +2,14 @@ package com.blushdesk.app.ui.order
 
 import androidx.compose.runtime.Composable
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
+import com.blushdesk.app.data.local.database.OrderWithItems
 
-/** Edits an existing order; the total is recalculated from the new price and quantity. */
+/** Edits an existing order and its products; every total is recalculated from the new lines. */
 @Composable
 fun EditOrderDialog(
-    order: Order,
+    order: OrderWithItems,
     buyerName: String,
-    onSave: (Order) -> Unit,
+    onSave: (Order, List<OrderItem>) -> Unit,
     onDismiss: () -> Unit,
-) = OrderFormDialog(buyerId = order.buyerId, buyerName = buyerName, initial = order, onSave = onSave, onDismiss = onDismiss)
+) = OrderFormDialog(buyerId = order.order.buyerId, buyerName = buyerName, initial = order, onSave = onSave, onDismiss = onDismiss)

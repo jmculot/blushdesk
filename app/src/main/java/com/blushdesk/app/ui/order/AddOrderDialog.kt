@@ -1,6 +1,9 @@
 package com.blushdesk.app.ui.order
 
 import android.text.format.DateFormat
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -14,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Schedule
@@ -32,14 +36,21 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.toMutableStateList
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -52,11 +63,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.domain.model.FulfillmentStatus
 import com.blushdesk.app.domain.model.PaymentMode
 import com.blushdesk.app.domain.model.PaymentStatus
 import com.blushdesk.app.ui.components.FormDialog
 import com.blushdesk.app.ui.components.FormField
+import com.blushdesk.app.ui.components.InlineMessage
 import com.blushdesk.app.ui.components.SegmentedChoice
 import com.blushdesk.app.ui.theme.Dimens
 import com.blushdesk.app.ui.theme.ShowroomTheme
@@ -71,54 +85,78 @@ import java.time.ZoneOffset
 
 private val PRICE_INPUT = Regex("""^\d{0,10}(\.\d{0,2})?$""")
 
+/** One product line as typed: still text, so half-typed values survive until they are valid. */
+private data class ItemDraft(val product: String = "", val price: String = "", val quantity: String = "1") {
+    val unitPrice: BigDecimal? get() = Money.parse(price)
+    val qty: Int? get() = quantity.trim().toIntOrNull()
+    val errors: Triple<String?, String?, String?>
+        get() = Triple(Validation.product(product), Validation.unitPrice(price), Validation.quantity(quantity))
+    val isValid: Boolean get() = errors.toList().all { it == null }
+
+    /** unit price x quantity, or null while either is incomplete. */
+    val lineTotal: BigDecimal? get() {
+        val p = unitPrice ?: return null
+        val q = qty ?: return null
+        return if (isValid) Money.total(p, q) else null
+    }
+
+    fun toItem(position: Int) = OrderItem(position = position, productName = product, unitPrice = unitPrice!!, quantity = qty!!)
+
+    companion object {
+        fun of(item: OrderItem) = ItemDraft(item.productName, Money.toInputString(item.unitPrice), item.quantity.toString())
+    }
+}
+
+/** Keeps the product lines across process death: three strings per line. */
+private val ItemDraftsSaver = listSaver<SnapshotStateList<ItemDraft>, String>(
+    save = { drafts -> drafts.flatMap { listOf(it.product, it.price, it.quantity) } },
+    restore = { flat -> flat.chunked(3).map { ItemDraft(it[0], it[1], it[2]) }.toMutableStateList() },
+)
+
 /** Records a new purchase for the selected buyer. */
 @Composable
 fun AddOrderDialog(
     buyerId: Long,
     buyerName: String,
-    onSave: (Order) -> Unit,
+    onSave: (Order, List<OrderItem>) -> Unit,
     onDismiss: () -> Unit,
 ) = OrderFormDialog(buyerId = buyerId, buyerName = buyerName, initial = null, onSave = onSave, onDismiss = onDismiss)
 
 /**
- * The order form shared by [AddOrderDialog] ([initial] = null) and [EditOrderDialog]. The total
- * under price and quantity is calculated on every keystroke (unit price x quantity) and is never
- * typed in, so the operator can read it back to the customer before saving.
+ * The order form shared by [AddOrderDialog] ([initial] = null) and [EditOrderDialog]: one or more
+ * product lines, then date, time, payment and fulfillment. Every line total (unit price x
+ * quantity) and the order total are calculated on every keystroke and never typed in, so the
+ * operator can read the total back to the customer before saving.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun OrderFormDialog(
     buyerId: Long,
     buyerName: String,
-    initial: Order?,
-    onSave: (Order) -> Unit,
+    initial: OrderWithItems?,
+    onSave: (Order, List<OrderItem>) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val zone = remember { ZoneId.systemDefault() }
+    val details = initial?.order
 
-    var product by rememberSaveable { mutableStateOf(initial?.productName.orEmpty()) }
-    var priceText by rememberSaveable { mutableStateOf(initial?.let { Money.toInputString(it.unitPrice) }.orEmpty()) }
-    var qtyText by rememberSaveable { mutableStateOf((initial?.quantity ?: 1).toString()) }
-    var purchasedAtMillis by rememberSaveable { mutableLongStateOf((initial?.purchaseDateTime ?: Instant.now()).toEpochMilli()) }
-    var mode by rememberSaveable { mutableStateOf(initial?.paymentMode ?: PaymentMode.CASH) }
-    var payment by rememberSaveable { mutableStateOf(initial?.paymentStatus ?: PaymentStatus.UNPAID) }
-    var stage by rememberSaveable { mutableStateOf(initial?.fulfillmentStatus ?: FulfillmentStatus.PROCESSING) }
+    val drafts = rememberSaveable(saver = ItemDraftsSaver) {
+        (initial?.items?.map(ItemDraft::of) ?: listOf(ItemDraft())).toMutableStateList()
+    }
+    var purchasedAtMillis by rememberSaveable { mutableLongStateOf((details?.purchaseDateTime ?: Instant.now()).toEpochMilli()) }
+    var mode by rememberSaveable { mutableStateOf(details?.paymentMode ?: PaymentMode.CASH) }
+    var payment by rememberSaveable { mutableStateOf(details?.paymentStatus ?: PaymentStatus.UNPAID) }
+    var stage by rememberSaveable { mutableStateOf(details?.fulfillmentStatus ?: FulfillmentStatus.PROCESSING) }
     var attempted by rememberSaveable { mutableStateOf(false) }
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
     var showTimePicker by rememberSaveable { mutableStateOf(false) }
+    // The line just added with "Add another product", until it has been scrolled to and focused.
+    // Not saveable on purpose: rotating the tablet should not jump the form again.
+    var newLine by remember { mutableStateOf<Int?>(null) }
 
     val local = Instant.ofEpochMilli(purchasedAtMillis).atZone(zone).toLocalDateTime()
-
-    val productError = Validation.product(product)
-    val priceError = Validation.unitPrice(priceText)
-    val qtyError = Validation.quantity(qtyText)
-    val unitPrice = Money.parse(priceText)
-    val quantity = qtyText.trim().toIntOrNull()
-    val total = if (priceError == null && qtyError == null && unitPrice != null && quantity != null) {
-        Money.total(unitPrice, quantity)
-    } else {
-        null
-    }
+    val allValid = drafts.all { it.isValid }
+    val orderTotal = if (allValid) drafts.fold(Money.ZERO) { sum, d -> sum + d.lineTotal!! } else null
 
     FormDialog(
         title = if (initial == null) "New order for $buyerName" else "Edit order",
@@ -126,88 +164,71 @@ internal fun OrderFormDialog(
         onDismiss = onDismiss,
         onConfirm = {
             attempted = true
-            if (productError == null && total != null && unitPrice != null && quantity != null) {
+            if (allValid && drafts.isNotEmpty()) {
                 val purchased = Instant.ofEpochMilli(purchasedAtMillis)
-                onSave(
-                    initial?.copy(
-                        productName = product,
-                        unitPrice = unitPrice,
-                        quantity = quantity,
-                        totalAmount = total,
-                        purchaseDateTime = purchased,
-                        paymentMode = mode,
-                        paymentStatus = payment,
-                        fulfillmentStatus = stage,
-                    ) ?: Order(
-                        buyerId = buyerId,
-                        productName = product,
-                        unitPrice = unitPrice,
-                        quantity = quantity,
-                        totalAmount = total,
-                        purchaseDateTime = purchased,
-                        paymentMode = mode,
-                        paymentStatus = payment,
-                        fulfillmentStatus = stage,
-                    ),
+                val items = drafts.mapIndexed { index, draft -> draft.toItem(index) }
+                val order = details?.copy(
+                    purchaseDateTime = purchased,
+                    paymentMode = mode,
+                    paymentStatus = payment,
+                    fulfillmentStatus = stage,
+                ) ?: Order(
+                    buyerId = buyerId,
+                    purchaseDateTime = purchased,
+                    paymentMode = mode,
+                    paymentStatus = payment,
+                    fulfillmentStatus = stage,
                 )
+                onSave(order, items)
             }
         },
     ) {
-        FormField(
-            value = product,
-            onValueChange = { product = it },
-            label = "Product name",
-            leadingIcon = Icons.Filled.Inventory2,
-            error = if (attempted) productError else null,
-            maxLength = Validation.MAX_PRODUCT,
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-            FormField(
-                value = priceText,
-                onValueChange = { if (PRICE_INPUT.matches(it)) priceText = it },
-                label = "Unit price",
-                modifier = Modifier.weight(1f),
-                prefix = Money.SYMBOL,
-                keyboardType = KeyboardType.Decimal,
-                error = if (attempted) priceError else null,
-            )
-            QuantityField(
-                value = qtyText,
-                onValueChange = { text -> if (text.length <= 4 && text.all { it.isDigit() }) qtyText = text },
-                error = if (attempted) qtyError else null,
-                modifier = Modifier.weight(1f),
+        SectionLabel("Products")
+        drafts.forEachIndexed { index, draft ->
+            ItemEditor(
+                index = index,
+                draft = draft,
+                showErrors = attempted,
+                canRemove = drafts.size > 1,
+                isNew = index == newLine,
+                onShown = { newLine = null },
+                onChange = { drafts[index] = it },
+                onRemove = { drafts.removeAt(index) },
             )
         }
+        OutlinedButton(
+            onClick = {
+                drafts.add(ItemDraft())
+                newLine = drafts.lastIndex
+            },
+            enabled = drafts.size < Validation.MAX_ITEMS,
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(Dimens.iconMedium))
+            Text(if (drafts.size < Validation.MAX_ITEMS) "  Add another product" else "  ${Validation.MAX_ITEMS} products is the limit")
+        }
 
-        TotalCard(total = total, quantity = quantity.takeIf { total != null }, unitPrice = unitPrice.takeIf { total != null })
+        TotalCard(total = orderTotal, lines = drafts.size, units = drafts.sumOf { it.qty ?: 0 })
 
-        Text("Purchase date and time", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionLabel("Purchase date and time")
+        Row(horizontalArrangement = Arrangement.spacedBy(Dimens.spaceM)) {
             OutlinedButton(onClick = { showDatePicker = true }, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(Dimens.iconMedium))
                 Text("  " + Formats.date(local))
             }
             OutlinedButton(onClick = { showTimePicker = true }, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Schedule, contentDescription = null, modifier = Modifier.size(Dimens.iconMedium))
                 Text("  " + Formats.time(local))
             }
         }
 
-        Text("Payment mode", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+        SectionLabel("Payment mode")
         SegmentedChoice(PaymentMode.entries, mode, { it.label }, { mode = it })
 
-        Text("Payment status", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+        SectionLabel("Payment status")
         SegmentedChoice(PaymentStatus.entries, payment, { it.label }, { payment = it })
-        if (payment.isPaid) {
-            Text(
-                "Paid orders can have a PDF receipt generated.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        if (payment.isPaid) InlineMessage("Paid orders can have a PDF receipt generated.", isError = false)
 
-        Text("Fulfillment status", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+        SectionLabel("Fulfillment status")
         SegmentedChoice(FulfillmentStatus.entries, stage, { it.label }, { stage = it })
     }
 
@@ -246,6 +267,100 @@ internal fun OrderFormDialog(
     }
 }
 
+@Composable
+private fun SectionLabel(text: String) {
+    Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+}
+
+/**
+ * One product line: name, unit price, quantity stepper and its line total. A line that was just
+ * added ([isNew]) scrolls itself into view and puts the cursor in its name, because the new card
+ * otherwise appears below the fold and the button seems to do nothing.
+ */
+@Composable
+private fun ItemEditor(
+    index: Int,
+    draft: ItemDraft,
+    showErrors: Boolean,
+    canRemove: Boolean,
+    isNew: Boolean,
+    onShown: () -> Unit,
+    onChange: (ItemDraft) -> Unit,
+    onRemove: () -> Unit,
+) {
+    val (productError, priceError, qtyError) = draft.errors
+    val bringIntoView = remember { BringIntoViewRequester() }
+    val nameFocus = remember { FocusRequester() }
+    if (isNew) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { } // the card has to be laid out before it can be scrolled to
+            bringIntoView.bringIntoView()
+            nameFocus.requestFocus()
+            onShown()
+        }
+    }
+    Surface(
+        modifier = Modifier.bringIntoViewRequester(bringIntoView),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(Dimens.border, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier.padding(start = Dimens.spaceM, end = Dimens.spaceXs, top = Dimens.spaceXs, bottom = Dimens.spaceM),
+            verticalArrangement = Arrangement.spacedBy(Dimens.spaceS),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Product ${index + 1}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = draft.lineTotal?.let { Money.format(it) } ?: "—",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(end = if (canRemove) 0.dp else Dimens.spaceM),
+                )
+                if (canRemove) {
+                    IconButton(onClick = onRemove) {
+                        Icon(Icons.Filled.Close, contentDescription = "Remove product ${index + 1}", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+            Column(modifier = Modifier.padding(end = Dimens.spaceS), verticalArrangement = Arrangement.spacedBy(Dimens.spaceS)) {
+                FormField(
+                    value = draft.product,
+                    onValueChange = { onChange(draft.copy(product = it)) },
+                    label = "Product name",
+                    modifier = Modifier.focusRequester(nameFocus),
+                    leadingIcon = Icons.Filled.Inventory2,
+                    error = if (showErrors) productError else null,
+                    maxLength = Validation.MAX_PRODUCT,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(Dimens.spaceM), verticalAlignment = Alignment.Top) {
+                    FormField(
+                        value = draft.price,
+                        onValueChange = { if (PRICE_INPUT.matches(it)) onChange(draft.copy(price = it)) },
+                        label = "Unit price",
+                        modifier = Modifier.weight(1f),
+                        prefix = Money.SYMBOL,
+                        keyboardType = KeyboardType.Decimal,
+                        error = if (showErrors) priceError else null,
+                    )
+                    QuantityField(
+                        value = draft.quantity,
+                        onValueChange = { text -> if (text.length <= 4 && text.all { it.isDigit() }) onChange(draft.copy(quantity = text)) },
+                        error = if (showErrors) qtyError else null,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** Number field flanked by - and + buttons, for quantities where tapping beats typing. */
 @Composable
 private fun QuantityField(
@@ -280,9 +395,9 @@ private fun QuantityField(
     )
 }
 
-/** The live "quantity x price = total" read-out. Announced politely by screen readers as it changes. */
+/** The live order total. Announced politely by screen readers as it changes. */
 @Composable
-private fun TotalCard(total: BigDecimal?, quantity: Int?, unitPrice: BigDecimal?) {
+private fun TotalCard(total: BigDecimal?, lines: Int, units: Int) {
     Surface(
         modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
         shape = MaterialTheme.shapes.medium,
@@ -293,9 +408,13 @@ private fun TotalCard(total: BigDecimal?, quantity: Int?, unitPrice: BigDecimal?
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("TOTAL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text("ORDER TOTAL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                 Text(
-                    text = if (quantity != null && unitPrice != null) "$quantity × ${Money.format(unitPrice)}" else "Enter price and quantity",
+                    text = if (total != null) {
+                        "${if (lines == 1) "1 product" else "$lines products"} · $units ${if (units == 1) "unit" else "units"}"
+                    } else {
+                        "Complete every product's price and quantity"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = ShowroomTheme.colors.mutedOnTint,
                 )
@@ -327,12 +446,12 @@ private fun TimeChooserDialog(
             tonalElevation = 6.dp,
             modifier = Modifier.width(IntrinsicSize.Min),
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
+            Column(modifier = Modifier.padding(Dimens.spaceXxl)) {
                 Text(
                     "Select time",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(bottom = 16.dp),
+                    modifier = Modifier.padding(bottom = Dimens.spaceL),
                 )
                 TimePicker(state = state)
                 Row(modifier = Modifier.fillMaxWidth()) {

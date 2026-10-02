@@ -31,7 +31,7 @@ data class ShowroomUiState(
     val expandedOrderId: Long?
         get() {
             val orders = detail?.orders ?: return null
-            return selectedOrderId?.takeIf { id -> orders.any { it.id == id } } ?: orders.firstOrNull()?.id
+            return selectedOrderId?.takeIf { id -> orders.any { it.order.id == id } } ?: orders.firstOrNull()?.order?.id
         }
 
     companion object {

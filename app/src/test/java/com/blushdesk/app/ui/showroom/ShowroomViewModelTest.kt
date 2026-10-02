@@ -3,6 +3,7 @@ package com.blushdesk.app.ui.showroom
 import android.database.sqlite.SQLiteException
 import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
 import com.blushdesk.app.domain.model.FulfillmentStatus
 import com.blushdesk.app.domain.model.PaymentMode
 import com.blushdesk.app.domain.model.PaymentStatus
@@ -52,6 +53,12 @@ class ShowroomViewModelTest {
     private fun buyer(name: String, contact: String = "0917 000 0000") =
         Buyer(fullName = name, contactNumber = contact, dateAdded = Instant.parse("2026-10-01T00:00:00Z"))
 
+    /** An order header plus its product lines, as the order form hands them over. */
+    private class NewOrder(val order: Order, val items: List<OrderItem>)
+
+    private fun item(product: String = "Sofa", unit: String = "1000.00", qty: Int = 1) =
+        OrderItem(productName = product, unitPrice = Money.of(unit), quantity = qty)
+
     private fun order(
         buyerId: Long,
         product: String = "Sofa",
@@ -60,11 +67,17 @@ class ShowroomViewModelTest {
         pay: PaymentStatus = PaymentStatus.PENDING,
         stage: FulfillmentStatus = FulfillmentStatus.PROCESSING,
         at: String = "2026-10-01T00:00:00Z",
-    ) = Order(
-        buyerId = buyerId, productName = product, unitPrice = Money.of(unit), quantity = qty,
-        purchaseDateTime = Instant.parse(at), paymentMode = PaymentMode.CASH,
-        paymentStatus = pay, fulfillmentStatus = stage,
+        items: List<OrderItem> = listOf(item(product, unit, qty)),
+    ) = NewOrder(
+        Order(
+            buyerId = buyerId, purchaseDateTime = Instant.parse(at), paymentMode = PaymentMode.CASH,
+            paymentStatus = pay, fulfillmentStatus = stage,
+        ),
+        items,
     )
+
+    private suspend fun FakeRepository.saveOrder(new: NewOrder) = saveOrder(new.order, new.items)
+    private fun ShowroomViewModel.saveOrder(new: NewOrder) = saveOrder(new.order, new.items)
 
     /** Keeps uiState and the event stream hot for the duration of the test. */
     private fun TestScope.observe(): MutableList<UiEvent> {
@@ -172,12 +185,41 @@ class ShowroomViewModelTest {
         val id = repo.saveBuyer(buyer("Ana"))
         advanceUntilIdle()
 
-        vm.saveOrder(order(id, unit = "999.99", qty = 3).copy(totalAmount = Money.of("1.00")))
+        // A line total that disagrees with price x quantity is ignored and recomputed.
+        vm.saveOrder(order(id, items = listOf(item(unit = "999.99", qty = 3).copy(lineTotal = Money.of("1.00")))))
         advanceUntilIdle()
 
         val saved = vm.uiState.value.detail!!.orders.single()
-        assertEquals(BigDecimal("2999.97"), saved.totalAmount)
-        assertEquals(saved.id, vm.uiState.value.expandedOrderId)
+        assertEquals(BigDecimal("2999.97"), saved.order.totalAmount)
+        assertEquals(BigDecimal("2999.97"), saved.items.single().lineTotal)
+        assertEquals(saved.order.id, vm.uiState.value.expandedOrderId)
+    }
+
+    @Test
+    fun `an order with several products totals all its lines`() = runTest {
+        observe()
+        val id = repo.saveBuyer(buyer("Ana"))
+
+        vm.saveOrder(order(id, items = listOf(item("Sofa", "12500.50", 1), item("Pillow", "450.00", 4), item("Rug", "3200.00", 1))))
+        advanceUntilIdle()
+
+        val saved = vm.uiState.value.detail!!.orders.single()
+        assertEquals(listOf("Sofa", "Pillow", "Rug"), saved.items.map { it.productName })
+        assertEquals(BigDecimal("17500.50"), saved.order.totalAmount)
+        assertEquals(6, saved.unitCount)
+        assertEquals(BigDecimal("17500.50"), vm.uiState.value.detail!!.totals.outstandingAmount)
+    }
+
+    @Test
+    fun `an order without products is refused with a clear message`() = runTest {
+        val events = observe()
+        val id = repo.saveBuyer(buyer("Ana"))
+
+        vm.saveOrder(order(id, items = emptyList()))
+        advanceUntilIdle()
+
+        assertEquals("Add at least one product", (events.single() as UiEvent.Error).message)
+        assertEquals(0, repo.orderCount())
     }
 
     @Test
@@ -202,17 +244,17 @@ class ShowroomViewModelTest {
         val buyerId = repo.saveBuyer(buyer("Ana"))
         val orderId = repo.saveOrder(order(buyerId))
 
-        vm.advanceOrder(repo.getOrder(orderId)!!)
+        vm.advanceOrder(repo.getOrder(orderId)!!.order)
         advanceUntilIdle()
-        assertEquals(FulfillmentStatus.PREPARING, repo.getOrder(orderId)!!.fulfillmentStatus)
+        assertEquals(FulfillmentStatus.PREPARING, repo.getOrder(orderId)!!.order.fulfillmentStatus)
 
-        vm.advanceOrder(repo.getOrder(orderId)!!)
+        vm.advanceOrder(repo.getOrder(orderId)!!.order)
         advanceUntilIdle()
-        assertEquals(FulfillmentStatus.DELIVERED, repo.getOrder(orderId)!!.fulfillmentStatus)
+        assertEquals(FulfillmentStatus.DELIVERED, repo.getOrder(orderId)!!.order.fulfillmentStatus)
 
-        vm.advanceOrder(repo.getOrder(orderId)!!)
+        vm.advanceOrder(repo.getOrder(orderId)!!.order)
         advanceUntilIdle()
-        assertEquals(FulfillmentStatus.DELIVERED, repo.getOrder(orderId)!!.fulfillmentStatus)
+        assertEquals(FulfillmentStatus.DELIVERED, repo.getOrder(orderId)!!.order.fulfillmentStatus)
     }
 
     @Test
@@ -224,7 +266,7 @@ class ShowroomViewModelTest {
         vm.setFulfillmentStatus(orderId, FulfillmentStatus.PROCESSING)
         advanceUntilIdle()
 
-        assertEquals(FulfillmentStatus.PROCESSING, repo.getOrder(orderId)!!.fulfillmentStatus)
+        assertEquals(FulfillmentStatus.PROCESSING, repo.getOrder(orderId)!!.order.fulfillmentStatus)
     }
 
     @Test

@@ -40,12 +40,12 @@ class AndroidDocumentService(
 
     override suspend fun createReceipt(orderId: Long): ReceiptDocument {
         val order = repository.getOrder(orderId) ?: throw UserFacingException("That order no longer exists")
-        if (!order.paymentStatus.isPaid) throw UserFacingException("Mark the order as paid before issuing a receipt")
-        val buyer = repository.getBuyer(order.buyerId) ?: throw UserFacingException("That buyer no longer exists")
+        if (!order.order.paymentStatus.isPaid) throw UserFacingException("Mark the order as paid before issuing a receipt")
+        val buyer = repository.getBuyer(order.order.buyerId) ?: throw UserFacingException("That buyer no longer exists")
         val operator = repository.getOperator()
 
         val folder = AppFiles.cacheDir(context, AppFiles.RECEIPTS_DIR)
-        val name = "Receipt_${Formats.orderNumber(order.id)}_${Formats.fileSafe(buyer.fullName)}.pdf"
+        val name = "Receipt_${Formats.orderNumber(order.order.id)}_${Formats.fileSafe(buyer.fullName)}.pdf"
         val file = pdf.generate(File(folder, name), operator, buyer, order)
 
         // The receipt is already complete in the cache; failing to copy it to Downloads must not lose it.

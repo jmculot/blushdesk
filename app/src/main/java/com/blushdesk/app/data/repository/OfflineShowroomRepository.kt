@@ -6,7 +6,9 @@ import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.BuyerListItem
 import com.blushdesk.app.data.local.database.OperatorProfile
 import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
 import com.blushdesk.app.data.local.database.OrderTotals
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.data.local.database.ShowroomSummary
 import com.blushdesk.app.domain.model.ExportSnapshot
 import com.blushdesk.app.domain.model.FulfillmentStatus
@@ -23,9 +25,10 @@ import java.time.Clock
 /**
  * [ShowroomRepository] backed by the local Room database: fully offline.
  *
- * This is where records are made consistent before they are stored: text is trimmed, the order
- * total is recomputed from price x quantity, createdAt / updatedAt are stamped from [clock], and
- * photos replaced by an edit are deleted once the new row is safely written.
+ * This is where records are made consistent before they are stored: text is trimmed, every line
+ * total (price x quantity) and the order total (sum of lines) are recomputed, createdAt / updatedAt
+ * are stamped from [clock], and photos replaced by an edit are deleted once the new row is safely
+ * written. An order and its lines are always written in one transaction.
  */
 class OfflineShowroomRepository(
     private val database: AppDatabase,
@@ -40,12 +43,12 @@ class OfflineShowroomRepository(
 
     override fun searchBuyers(query: String): Flow<List<BuyerListItem>> = dao.searchBuyers(likePattern(query))
     override fun observeBuyer(buyerId: Long): Flow<Buyer?> = dao.observeBuyer(buyerId)
-    override fun observeOrders(buyerId: Long): Flow<List<Order>> = dao.observeOrdersForBuyer(buyerId)
+    override fun observeOrders(buyerId: Long): Flow<List<OrderWithItems>> = dao.observeOrdersForBuyer(buyerId)
     override fun observeOrderTotals(buyerId: Long): Flow<OrderTotals> = dao.observeOrderTotals(buyerId)
 
     override suspend fun getOperator(): OperatorProfile = dao.getOperator() ?: OperatorProfile()
     override suspend fun getBuyer(buyerId: Long): Buyer? = dao.getBuyer(buyerId)
-    override suspend fun getOrder(orderId: Long): Order? = dao.getOrder(orderId)
+    override suspend fun getOrder(orderId: Long): OrderWithItems? = dao.getOrderWithItems(orderId)
 
     override suspend fun getExportSnapshot(): ExportSnapshot = database.withTransaction {
         ExportSnapshot(
@@ -102,20 +105,28 @@ class OfflineShowroomRepository(
         photos.delete(buyer?.profileImageUri)
     }
 
-    override suspend fun saveOrder(order: Order): Long {
-        val clean = order.copy(
-            productName = order.productName.trim(),
-            totalAmount = Money.total(order.unitPrice, order.quantity),
-        )
-        Validation.orderProblem(clean)?.let { throw UserFacingException(it) }
-        dao.getBuyer(clean.buyerId) ?: throw UserFacingException("That buyer no longer exists")
+    override suspend fun saveOrder(order: Order, items: List<OrderItem>): Long {
+        val lines = items.mapIndexed { index, item ->
+            val name = item.productName.trim()
+            item.copy(id = 0, position = index, productName = name, lineTotal = Money.total(item.unitPrice, item.quantity))
+        }
+        Validation.itemsProblem(lines)?.let { throw UserFacingException(it) }
+        val total = lines.fold(Money.ZERO) { sum, line -> sum + line.lineTotal }
         val now = clock.instant()
 
-        if (clean.id == 0L) return dao.insertOrder(clean.copy(createdAt = now, updatedAt = now))
-
-        val previous = dao.getOrder(clean.id) ?: throw UserFacingException("That order no longer exists")
-        dao.updateOrder(clean.copy(createdAt = previous.createdAt, updatedAt = now))
-        return clean.id
+        return database.withTransaction {
+            dao.getBuyer(order.buyerId) ?: throw UserFacingException("That buyer no longer exists")
+            val orderId = if (order.id == 0L) {
+                dao.insertOrder(order.copy(totalAmount = total, createdAt = now, updatedAt = now))
+            } else {
+                val previous = dao.getOrder(order.id) ?: throw UserFacingException("That order no longer exists")
+                dao.updateOrder(order.copy(totalAmount = total, createdAt = previous.createdAt, updatedAt = now))
+                dao.deleteItemsOfOrder(order.id)
+                order.id
+            }
+            dao.insertItems(lines.map { it.copy(orderId = orderId) })
+            orderId
+        }
     }
 
     override suspend fun deleteOrder(orderId: Long) = dao.deleteOrder(orderId)

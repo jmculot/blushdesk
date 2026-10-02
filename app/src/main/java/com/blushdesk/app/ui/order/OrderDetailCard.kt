@@ -5,9 +5,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -29,8 +31,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.domain.model.FulfillmentStatus
 import com.blushdesk.app.ui.components.FulfillmentProgress
 import com.blushdesk.app.ui.components.FulfillmentStatusBadge
@@ -39,32 +44,34 @@ import com.blushdesk.app.ui.components.OrderHeadline
 import com.blushdesk.app.ui.components.PaymentStatusBadge
 import com.blushdesk.app.ui.theme.Dimens
 import com.blushdesk.app.utils.Formats
+import com.blushdesk.app.utils.Money
 
 /** What an expanded order can ask for. */
 class OrderActions(
-    val onEdit: (Order) -> Unit,
-    val onDelete: (Order) -> Unit,
-    val onAdvance: (Order) -> Unit,
-    val onSetFulfillment: (Order, FulfillmentStatus) -> Unit,
-    val onMarkPaid: (Order) -> Unit,
-    val onReceipt: (Order) -> Unit,
+    val onEdit: (OrderWithItems) -> Unit,
+    val onDelete: (OrderWithItems) -> Unit,
+    val onAdvance: (OrderWithItems) -> Unit,
+    val onSetFulfillment: (OrderWithItems, FulfillmentStatus) -> Unit,
+    val onMarkPaid: (OrderWithItems) -> Unit,
+    val onReceipt: (OrderWithItems) -> Unit,
 )
 
 /**
- * The expanded order: purchase and payment details, the fulfillment progress with one-tap
- * updates, and the actions (mark paid, PDF receipt, edit, delete). The receipt button is only
- * enabled for paid orders, and says why when it is not.
+ * The expanded order: its product lines, purchase and payment details, the fulfillment progress
+ * with one-tap updates, and the actions (mark paid, PDF receipt, edit, delete). The receipt button
+ * is only enabled for paid orders, and says why when it is not.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OrderDetailCard(
-    order: Order,
+    order: OrderWithItems,
     receiptBusy: Boolean,
     anyReceiptBusy: Boolean,
     actions: OrderActions,
     modifier: Modifier = Modifier,
 ) {
-    val paid = order.paymentStatus.isPaid
+    val details = order.order
+    val paid = details.paymentStatus.isPaid
 
     Surface(
         modifier = modifier,
@@ -75,25 +82,22 @@ fun OrderDetailCard(
         Column(modifier = Modifier.padding(Dimens.spaceXl), verticalArrangement = Arrangement.spacedBy(Dimens.spaceL)) {
             OrderHeadline(order)
 
+            ItemsTable(order)
+
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(Dimens.spaceXxl),
                 verticalArrangement = Arrangement.spacedBy(Dimens.spaceM),
             ) {
-                Fact("Purchase date") { FactText(Formats.date(order.purchaseDateTime)) }
-                Fact("Purchase time") { FactText(Formats.time(order.purchaseDateTime)) }
-                Fact("Payment method") { FactText(order.paymentMode.label) }
-                Fact("Payment status") { PaymentStatusBadge(order.paymentStatus) }
-                Fact("Fulfillment status") { FulfillmentStatusBadge(order.fulfillmentStatus) }
+                Fact("Purchase date") { FactText(Formats.date(details.purchaseDateTime)) }
+                Fact("Purchase time") { FactText(Formats.time(details.purchaseDateTime)) }
+                Fact("Payment method") { FactText(details.paymentMode.label) }
+                Fact("Payment status") { PaymentStatusBadge(details.paymentStatus) }
+                Fact("Fulfillment status") { FulfillmentStatusBadge(details.fulfillmentStatus) }
             }
 
-            Text(
-                text = "ORDER LIFECYCLE",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.semantics { heading() },
-            )
-            FulfillmentProgress(current = order.fulfillmentStatus, onSelect = { actions.onSetFulfillment(order, it) })
+            Caption("ORDER LIFECYCLE")
+            FulfillmentProgress(current = details.fulfillmentStatus, onSelect = { actions.onSetFulfillment(order, it) })
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
@@ -103,7 +107,7 @@ fun OrderDetailCard(
                 verticalArrangement = Arrangement.spacedBy(Dimens.spaceS),
                 itemVerticalAlignment = Alignment.CenterVertically,
             ) {
-                order.fulfillmentStatus.next?.let { next ->
+                details.fulfillmentStatus.next?.let { next ->
                     FilledTonalButton(onClick = { actions.onAdvance(order) }) {
                         Text("Move to ${next.label}")
                         Icon(
@@ -128,11 +132,12 @@ fun OrderDetailCard(
                     }
                     Text(if (receiptBusy) "  Creating…" else "  Paid receipt (PDF)")
                 }
+                val label = Formats.itemsSummary(order.items.map { it.productName })
                 IconButton(onClick = { actions.onEdit(order) }) {
-                    Icon(Icons.Filled.Edit, contentDescription = "Edit order ${order.productName}", tint = MaterialTheme.colorScheme.secondary)
+                    Icon(Icons.Filled.Edit, contentDescription = "Edit order $label", tint = MaterialTheme.colorScheme.secondary)
                 }
                 IconButton(onClick = { actions.onDelete(order) }) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Delete order ${order.productName}", tint = MaterialTheme.colorScheme.error)
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete order $label", tint = MaterialTheme.colorScheme.error)
                 }
             }
             if (!paid) {
@@ -140,6 +145,69 @@ fun OrderDetailCard(
             }
         }
     }
+}
+
+/** Every product line: name, quantity × unit price, and the line total; then the order total. */
+@Composable
+private fun ItemsTable(order: OrderWithItems) {
+    Column(verticalArrangement = Arrangement.spacedBy(Dimens.spaceS)) {
+        Caption("ITEMS (${order.items.size})")
+        order.items.forEach { item ->
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(Dimens.spaceM)) {
+                Text(
+                    text = item.productName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "${item.quantity} × ${Money.format(item.unitPrice)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.widthIn(min = 140.dp),
+                )
+                Text(
+                    text = Money.format(item.lineTotal),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(130.dp),
+                )
+            }
+        }
+        if (order.items.size > 1) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Order total",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    Money.format(order.order.totalAmount),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Caption(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.semantics { heading() },
+    )
 }
 
 /** A small caption above a value. */

@@ -35,6 +35,13 @@ object Formats {
     /** The receipt number printed on PDFs and shown on order cards: BD-000042. */
     fun orderNumber(orderId: Long): String = "BD-" + orderId.toString().padStart(6, '0')
 
+    /** "Velvet Sofa", "Velvet Sofa + 1 more", "Velvet Sofa + 3 more": a one-line name for an order. */
+    fun itemsSummary(productNames: List<String>): String = when (productNames.size) {
+        0 -> "No items"
+        1 -> productNames[0]
+        else -> "${productNames[0]} + ${productNames.size - 1} more"
+    }
+
     /** Two-letter avatar fallback: "Ana Reyes" -> "AR", "Cher" -> "C". */
     fun initials(name: String): String {
         val words = name.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }

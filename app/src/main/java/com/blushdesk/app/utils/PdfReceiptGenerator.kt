@@ -16,7 +16,8 @@ import androidx.core.graphics.withClip
 import androidx.core.graphics.withTranslation
 import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.OperatorProfile
-import com.blushdesk.app.data.local.database.Order
+import com.blushdesk.app.data.local.database.OrderItem
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.ui.theme.BrandPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -26,12 +27,14 @@ import java.time.Instant
 import java.time.ZoneId
 
 /**
- * Draws a one-page A4 receipt with Android's native [PdfDocument] (vector text and shapes, so it
- * stays sharp when printed) and writes it to [generate]'s destination file.
+ * Draws an A4 receipt with Android's native [PdfDocument] (vector text and shapes, so it stays
+ * sharp when printed) and writes it to [generate]'s destination file.
  *
- * Layout, top to bottom: showroom header band, "billed to" card with the purchase facts, the
- * itemized table, the total, a thank-you footer and a large semi-transparent PAID stamp across the
- * page. Units are PDF points (1/72 in); A4 is 595 x 842.
+ * Page 1: showroom header band, "billed to" card with the purchase facts, then the itemized table.
+ * When the items do not fit, the table continues on further pages under a compact header, with
+ * its column headings repeated. The total follows the last row. Every page has the footer, a page
+ * number (when there is more than one) and a large semi-transparent PAID stamp.
+ * Units are PDF points (1/72 in); A4 is 595 x 842.
  */
 class PdfReceiptGenerator {
 
@@ -43,21 +46,26 @@ class PdfReceiptGenerator {
         destination: File,
         operator: OperatorProfile,
         buyer: Buyer,
-        order: Order,
+        order: OrderWithItems,
         zone: ZoneId = ZoneId.systemDefault(),
         issuedAt: Instant = Instant.now(),
     ): File = withContext(Dispatchers.IO) {
-        require(order.paymentStatus.isPaid) { "A receipt can only be issued for a paid order" }
-        require(order.buyerId == buyer.id) { "Order ${order.id} does not belong to buyer ${buyer.id}" }
+        require(order.order.paymentStatus.isPaid) { "A receipt can only be issued for a paid order" }
+        require(order.order.buyerId == buyer.id) { "Order ${order.order.id} does not belong to buyer ${buyer.id}" }
+        require(order.items.isNotEmpty()) { "Order ${order.order.id} has no items" }
 
         destination.absoluteFile.parentFile?.mkdirs()
         val partial = File(destination.absoluteFile.parentFile, destination.name + ".part")
         val avatar = AppFiles.localFile(operator.profileImageUri)?.let { loadSampled(it.path, AVATAR_DECODE_PX) }
         val document = PdfDocument()
         try {
-            val page = document.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, 1).create())
-            ReceiptPage(page.canvas, operator, buyer, order, zone, issuedAt, avatar).draw()
-            document.finishPage(page)
+            val renderer = ReceiptRenderer(operator, buyer, order, zone, issuedAt, avatar)
+            val plan = renderer.paginate()
+            plan.forEachIndexed { index, pagePlan ->
+                val page = document.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, index + 1).create())
+                renderer.drawPage(page.canvas, pagePlan, pageNumber = index + 1, pageCount = plan.size)
+                document.finishPage(page)
+            }
             FileOutputStream(partial).use { document.writeTo(it) }
             if (destination.exists()) destination.delete()
             if (!partial.renameTo(destination)) {
@@ -83,29 +91,86 @@ class PdfReceiptGenerator {
         return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 
-    private class ReceiptPage(
-        private val canvas: Canvas,
+    /** One table row: the item, its wrapped name and the row height it needs. */
+    private class Row(val item: OrderItem, val name: StaticLayout, val height: Float)
+
+    /** What goes on one page. */
+    private class PagePlan(val rows: List<Row>, val isFirst: Boolean, val showTotal: Boolean)
+
+    private class ReceiptRenderer(
         private val operator: OperatorProfile,
         private val buyer: Buyer,
-        private val order: Order,
+        private val order: OrderWithItems,
         private val zone: ZoneId,
         private val issuedAt: Instant,
         private val avatar: Bitmap?,
     ) {
+        private lateinit var canvas: Canvas
         private val text = TextPaint(Paint.ANTI_ALIAS_FLAG)
         private val shape = Paint(Paint.ANTI_ALIAS_FLAG)
 
         private val regular = Typeface.create("sans-serif", Typeface.NORMAL)
         private val bold = Typeface.create("sans-serif", Typeface.BOLD)
 
-        private val storeName = operator.storeName.ifBlank { "Showroom" }
+        // Item names are laid out ahead of drawing, so they get their own paint that nothing mutates.
+        private val itemPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 11.5f
+            typeface = bold
+            color = argb(BrandPalette.DARK_TEXT)
+        }
 
-        fun draw() {
-            header()
-            billedTo()
-            val tableBottom = table()
-            total(tableBottom)
-            footer()
+        private val storeName = operator.storeName.ifBlank { "Showroom" }
+        private val number = Formats.orderNumber(order.order.id)
+
+        // ---- Pagination ---------------------------------------------------------------------
+
+        /** Splits the item rows over as many pages as needed, keeping the total after the last row. */
+        fun paginate(): List<PagePlan> {
+            val rows = order.items.map { item ->
+                val layout = StaticLayout.Builder
+                    .obtain(item.productName, 0, item.productName.length, itemPaint, ITEM_WIDTH.toInt())
+                    .setMaxLines(3)
+                    .setEllipsize(TextUtils.TruncateAt.END)
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .build()
+                Row(item, layout, maxOf(ROW_MIN_H, layout.height + 2 * ROW_PADDING))
+            }
+
+            val pages = mutableListOf<PagePlan>()
+            var current = mutableListOf<Row>()
+            var y = FIRST_TABLE_TOP + TABLE_HEADER_H
+            for (row in rows) {
+                if (current.isNotEmpty() && y + row.height > CONTENT_BOTTOM) {
+                    pages += PagePlan(current, isFirst = pages.isEmpty(), showTotal = false)
+                    current = mutableListOf()
+                    y = NEXT_TABLE_TOP + TABLE_HEADER_H
+                }
+                current += row
+                y += row.height
+            }
+            if (y + TOTAL_GAP + TOTAL_H > CONTENT_BOTTOM) {
+                // The total does not fit under the last row: it moves to a page of its own.
+                pages += PagePlan(current, isFirst = pages.isEmpty(), showTotal = false)
+                current = mutableListOf()
+            }
+            pages += PagePlan(current, isFirst = pages.isEmpty(), showTotal = true)
+            return pages
+        }
+
+        fun drawPage(target: Canvas, plan: PagePlan, pageNumber: Int, pageCount: Int) {
+            canvas = target
+            val tableTop = if (plan.isFirst) {
+                header()
+                billedTo()
+                FIRST_TABLE_TOP
+            } else {
+                continuationHeader()
+                NEXT_TABLE_TOP
+            }
+            var bottom = tableTop
+            if (plan.rows.isNotEmpty()) bottom = table(tableTop, plan.rows)
+            if (plan.showTotal) total(bottom)
+            footer(pageNumber, pageCount)
             paidStamp()
         }
 
@@ -115,9 +180,7 @@ class PdfReceiptGenerator {
             rect(0f, 0f, W, HEADER_H, BrandPalette.DEEP_MAGENTA)
             rect(0f, HEADER_H, W, HEADER_H + 6f, BrandPalette.VIBRANT_ROSE)
 
-            val cx = MARGIN + 34f
-            val cy = 68f
-            avatar(cx, cy, 34f)
+            avatar(MARGIN + 34f, 68f, 34f)
 
             val textX = MARGIN + 86f
             val rightEdge = W - MARGIN
@@ -131,11 +194,19 @@ class PdfReceiptGenerator {
             }
 
             line("RECEIPT", rightEdge, 56f, 30f, BrandPalette.WHITE, bold = true, align = Paint.Align.RIGHT, spacing = 0.08f)
-            line("No. ${Formats.orderNumber(order.id)}", rightEdge, 78f, 11.5f, BrandPalette.SOFT_PINK, bold = true, align = Paint.Align.RIGHT)
+            line("No. $number", rightEdge, 78f, 11.5f, BrandPalette.SOFT_PINK, bold = true, align = Paint.Align.RIGHT)
             line("Issued ${Formats.date(issuedAt, zone)}", rightEdge, 94f, 10.5f, BrandPalette.SOFT_PINK, align = Paint.Align.RIGHT)
         }
 
-        /** The operator's photo in a circle, or their initial on a soft-pink disc. */
+        /** Slim band on pages 2+, so a loose page still says whose receipt it is. */
+        private fun continuationHeader() {
+            rect(0f, 0f, W, CONT_HEADER_H, BrandPalette.DEEP_MAGENTA)
+            rect(0f, CONT_HEADER_H, W, CONT_HEADER_H + 4f, BrandPalette.VIBRANT_ROSE)
+            line(storeName, MARGIN, 40f, 16f, BrandPalette.WHITE, bold = true, maxWidth = 260f)
+            line("Receipt No. $number (continued)", W - MARGIN, 40f, 11f, BrandPalette.SOFT_PINK, bold = true, align = Paint.Align.RIGHT)
+        }
+
+        /** The operator's photo in a circle, or their initials on a soft-pink disc. */
         private fun avatar(cx: Float, cy: Float, r: Float) {
             if (avatar != null) {
                 val path = Path().apply { addCircle(cx, cy, r, Path.Direction.CW) }
@@ -189,93 +260,84 @@ class PdfReceiptGenerator {
             val valueX = W - MARGIN - 18f
             val paymentStatusLabel = "Payment status"
             val facts = listOf(
-                "Purchase date" to Formats.date(order.purchaseDateTime, zone),
-                "Purchase time" to Formats.time(order.purchaseDateTime, zone),
-                "Payment method" to order.paymentMode.label,
-                paymentStatusLabel to order.paymentStatus.label.uppercase(),
-                "Fulfillment status" to order.fulfillmentStatus.label,
+                "Purchase date" to Formats.date(order.order.purchaseDateTime, zone),
+                "Purchase time" to Formats.time(order.order.purchaseDateTime, zone),
+                "Payment method" to order.order.paymentMode.label,
+                paymentStatusLabel to order.order.paymentStatus.label.uppercase(),
+                "Fulfillment status" to order.order.fulfillmentStatus.label,
             )
             facts.forEachIndexed { index, (key, value) ->
                 val rowY = cardTop + 28f + index * 20f
                 line(key, keyX, rowY, 9.5f, BrandPalette.MUTED_TEXT_ON_TINT)
-                val color = if (key == paymentStatusLabel) BrandPalette.tone(order.paymentStatus).foreground else BrandPalette.DARK_TEXT
+                val color = if (key == paymentStatusLabel) BrandPalette.tone(order.order.paymentStatus).foreground else BrandPalette.DARK_TEXT
                 line(value, valueX, rowY, 10.5f, color, bold = true, align = Paint.Align.RIGHT, maxWidth = valueX - keyX - 90f)
             }
         }
 
         // ---- Itemized table -----------------------------------------------------------------
 
-        /** Draws the header and the single order line; returns the y of the table's bottom edge. */
-        private fun table(): Float {
-            val top = 326f
-            val headerH = 28f
-            val itemX = MARGIN + 16f
-            // Column layout (points): item 52-252, unit price 262-372, qty 390-434, amount 440-543.
-            // Numbers shrink to their column rather than overlap a neighbour or lose digits.
-            val itemWidth = 200f
-            val unitRight = 372f
-            val unitWidth = 108f
-            val qtyCenter = 412f
-            val qtyWidth = 44f
-            val amountRight = W - MARGIN - 16f
-            val amountWidth = 103f
-
+        /** Draws the column headings and [rows] from [top]; returns the y of the table's bottom edge. */
+        private fun table(top: Float, rows: List<Row>): Float {
             // Header: rose bar with rounded top corners.
-            val bar = RectF(MARGIN, top, W - MARGIN, top + headerH)
             shape.style = Paint.Style.FILL
             shape.color = argb(BrandPalette.VIBRANT_ROSE)
-            canvas.drawRoundRect(bar, 8f, 8f, shape)
-            canvas.drawRect(MARGIN, top + headerH / 2, W - MARGIN, top + headerH, shape)
+            canvas.drawRoundRect(RectF(MARGIN, top, W - MARGIN, top + TABLE_HEADER_H), 8f, 8f, shape)
+            canvas.drawRect(MARGIN, top + TABLE_HEADER_H / 2, W - MARGIN, top + TABLE_HEADER_H, shape)
 
             val headerBaseline = top + 18f
-            line("ITEM", itemX, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, spacing = 0.1f)
-            line("UNIT PRICE", unitRight, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, align = Paint.Align.RIGHT, spacing = 0.1f)
-            line("QTY", qtyCenter, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, align = Paint.Align.CENTER, spacing = 0.1f)
-            line("AMOUNT", amountRight, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, align = Paint.Align.RIGHT, spacing = 0.1f)
+            line("ITEM", ITEM_X, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, spacing = 0.1f)
+            line("UNIT PRICE", UNIT_RIGHT, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, align = Paint.Align.RIGHT, spacing = 0.1f)
+            line("QTY", QTY_CENTER, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, align = Paint.Align.CENTER, spacing = 0.1f)
+            line("AMOUNT", AMOUNT_RIGHT, headerBaseline, 9.5f, BrandPalette.WHITE, bold = true, align = Paint.Align.RIGHT, spacing = 0.1f)
 
-            // Product name wraps (at most 3 lines) so a long name can never run into the price.
-            applyStyle(12.5f, BrandPalette.DARK_TEXT, bold = true)
-            val nameLayout = StaticLayout.Builder
-                .obtain(order.productName, 0, order.productName.length, text, itemWidth.toInt())
-                .setMaxLines(3)
-                .setEllipsize(TextUtils.TruncateAt.END)
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .build()
-            val rowTop = top + headerH
-            val rowH = maxOf(56f, nameLayout.height + 40f)
+            var y = top + TABLE_HEADER_H
+            rows.forEachIndexed { index, row ->
+                // Zebra striping so a long list of products stays easy to read across.
+                if (index % 2 == 1) rect(MARGIN + 0.5f, y, W - MARGIN - 0.5f, y + row.height, BrandPalette.LAVENDER_BLUSH)
+                canvas.withTranslation(ITEM_X, y + ROW_PADDING) { row.name.draw(this) }
 
-            canvas.withTranslation(itemX, rowTop + 14f) { nameLayout.draw(this) }
-            line("Order ${Formats.orderNumber(order.id)}", itemX, rowTop + 14f + nameLayout.height + 14f, 9f, BrandPalette.MUTED_TEXT)
+                // Numbers sit on the first line of the name; they shrink to their column, never truncate.
+                val baseline = y + ROW_PADDING + row.name.getLineBaseline(0)
+                line(Money.format(row.item.unitPrice), UNIT_RIGHT, baseline, 11f, BrandPalette.DARK_TEXT, align = Paint.Align.RIGHT, fitWidth = UNIT_WIDTH)
+                line(row.item.quantity.toString(), QTY_CENTER, baseline, 11f, BrandPalette.DARK_TEXT, align = Paint.Align.CENTER, fitWidth = QTY_WIDTH)
+                line(Money.format(row.item.lineTotal), AMOUNT_RIGHT, baseline, 11.5f, BrandPalette.DARK_TEXT, bold = true, align = Paint.Align.RIGHT, fitWidth = AMOUNT_WIDTH)
 
-            val baseline = rowTop + rowH / 2f + 4f
-            line(Money.format(order.unitPrice), unitRight, baseline, 11f, BrandPalette.DARK_TEXT, align = Paint.Align.RIGHT, fitWidth = unitWidth)
-            line(order.quantity.toString(), qtyCenter, baseline, 11f, BrandPalette.DARK_TEXT, align = Paint.Align.CENTER, fitWidth = qtyWidth)
-            line(Money.format(order.totalAmount), amountRight, baseline, 11.5f, BrandPalette.DARK_TEXT, bold = true, align = Paint.Align.RIGHT, fitWidth = amountWidth)
+                y += row.height
+                if (index < rows.lastIndex) {
+                    shape.style = Paint.Style.STROKE
+                    shape.strokeWidth = 0.75f
+                    shape.color = argb(BrandPalette.OUTLINE_SOFT)
+                    canvas.drawLine(MARGIN, y, W - MARGIN, y, shape)
+                }
+            }
 
             // Outline of the whole table, drawn last so it sits on top of the bar's corners.
-            val bottom = rowTop + rowH
             shape.style = Paint.Style.STROKE
             shape.strokeWidth = 1f
             shape.color = argb(BrandPalette.OUTLINE_SOFT)
-            canvas.drawRoundRect(RectF(MARGIN, top, W - MARGIN, bottom), 8f, 8f, shape)
-            return bottom
+            canvas.drawRoundRect(RectF(MARGIN, top, W - MARGIN, y), 8f, 8f, shape)
+            return y
         }
 
-        private fun total(tableBottom: Float) {
+        private fun total(after: Float) {
             val boxW = 290f
-            val boxH = 88f
             val left = W - MARGIN - boxW
-            val top = tableBottom + 20f
-            roundRect(left, top, W - MARGIN, top + boxH, 12f, BrandPalette.SOFT_PINK, null)
+            val top = after + TOTAL_GAP
+            roundRect(left, top, W - MARGIN, top + TOTAL_H, 12f, BrandPalette.SOFT_PINK, null)
             // Label row on top, the amount on its own line below so even a very large total has the full box width.
             line("TOTAL PAID", left + 18f, top + 28f, 10f, BrandPalette.DEEP_MAGENTA, bold = true, spacing = 0.14f)
-            line("via ${order.paymentMode.label}", W - MARGIN - 18f, top + 28f, 9.5f, BrandPalette.MUTED_TEXT_ON_TINT, align = Paint.Align.RIGHT)
-            line(Money.format(order.totalAmount), W - MARGIN - 18f, top + 66f, 28f, BrandPalette.DEEP_MAGENTA, bold = true, align = Paint.Align.RIGHT, fitWidth = boxW - 36f)
+            val items = order.items.size
+            val summary = "${if (items == 1) "1 item" else "$items items"} · via ${order.order.paymentMode.label}"
+            line(summary, W - MARGIN - 18f, top + 28f, 9.5f, BrandPalette.MUTED_TEXT_ON_TINT, align = Paint.Align.RIGHT)
+            line(
+                Money.format(order.order.totalAmount), W - MARGIN - 18f, top + 66f, 28f, BrandPalette.DEEP_MAGENTA,
+                bold = true, align = Paint.Align.RIGHT, fitWidth = boxW - 36f,
+            )
         }
 
-        // ---- Footer -------------------------------------------------------------------------
+        // ---- Footer and watermark -----------------------------------------------------------
 
-        private fun footer() {
+        private fun footer(pageNumber: Int, pageCount: Int) {
             shape.style = Paint.Style.STROKE
             shape.strokeWidth = 1f
             shape.color = argb(BrandPalette.OUTLINE_SOFT)
@@ -284,10 +346,11 @@ class PdfReceiptGenerator {
             line("Thank you for shopping with $storeName!", W / 2, H - 70f, 13f, BrandPalette.DEEP_MAGENTA, bold = true, align = Paint.Align.CENTER, maxWidth = W - 2 * MARGIN)
             line("This is a computer-generated receipt and does not need a signature.", W / 2, H - 52f, 9f, BrandPalette.MUTED_TEXT, align = Paint.Align.CENTER)
             line("Generated ${Formats.dateTime(issuedAt, zone)} with BlushDesk", W / 2, H - 38f, 8.5f, BrandPalette.MUTED_TEXT, align = Paint.Align.CENTER)
+            if (pageCount > 1) {
+                line("Page $pageNumber of $pageCount", W - MARGIN, H - 20f, 8.5f, BrandPalette.MUTED_TEXT, bold = true, align = Paint.Align.RIGHT)
+            }
             rect(0f, H - 10f, W, H, BrandPalette.VIBRANT_ROSE)
         }
-
-        // ---- Watermark ----------------------------------------------------------------------
 
         /** A rotated, ~16%-opaque rubber-stamp "PAID" across the middle of the page. */
         private fun paidStamp() {
@@ -385,8 +448,34 @@ class PdfReceiptGenerator {
     }
 }
 
+// Page geometry, in points.
 private const val W = 595f
 private const val H = 842f
 private const val MARGIN = 36f
 private const val HEADER_H = 132f
+private const val CONT_HEADER_H = 64f
 private const val MIN_FIT_SIZE = 6.5f
+
+/** Where the table starts on page 1 (under the billed-to card) and on later pages. */
+private const val FIRST_TABLE_TOP = 326f
+private const val NEXT_TABLE_TOP = 92f
+
+/** Nothing but the footer goes below this line. */
+private const val CONTENT_BOTTOM = H - 110f
+
+private const val TABLE_HEADER_H = 28f
+private const val ROW_PADDING = 13f
+private const val ROW_MIN_H = 40f
+private const val TOTAL_GAP = 20f
+private const val TOTAL_H = 88f
+
+// Columns: item 52-252, unit price 262-372, qty 390-434, amount 440-543.
+// Numbers shrink to their column rather than overlap a neighbor or lose digits.
+private const val ITEM_X = MARGIN + 16f
+private const val ITEM_WIDTH = 200f
+private const val UNIT_RIGHT = 372f
+private const val UNIT_WIDTH = 108f
+private const val QTY_CENTER = 412f
+private const val QTY_WIDTH = 44f
+private const val AMOUNT_RIGHT = W - MARGIN - 16f
+private const val AMOUNT_WIDTH = 103f

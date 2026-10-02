@@ -47,7 +47,9 @@ class ExcelExporterAndroidTest {
                 assertEquals(listOf("Buyers", "Orders", "Operator", "Summary"), (0 until workbook.numberOfSheets).map { workbook.getSheetName(it) })
 
                 val orders = workbook.getSheet("Orders")
-                assertEquals(3, orders.lastRowNum)
+                assertEquals(4, orders.lastRowNum) // one row per product line: 1 + 2 + 1
+                assertEquals("Throw Pillow", orders.getRow(4).getCell(3).stringCellValue)
+                assertEquals(5_300.00, orders.getRow(4).getCell(12).numericCellValue, 0.0) // that order's total
                 assertEquals("Velvet Sofa", orders.getRow(1).getCell(3).stringCellValue)
                 assertEquals(25_001.00, orders.getRow(1).getCell(6).numericCellValue, 0.0)
                 assertEquals("Paid", orders.getRow(1).getCell(10).stringCellValue)
