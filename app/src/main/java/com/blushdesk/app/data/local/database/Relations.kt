@@ -6,11 +6,24 @@ import com.blushdesk.app.domain.model.FulfillmentStatus
 import com.blushdesk.app.domain.model.PaymentStatus
 import java.math.BigDecimal
 
-/** A buyer with all of their orders, loaded by Room in one transaction. Used by the Excel export. */
+/** An order with its product lines, loaded by Room in one transaction. */
+data class OrderWithItems(
+    @Embedded val order: Order,
+    @Relation(parentColumn = "id", entityColumn = "orderId")
+    private val itemRows: List<OrderItem>,
+) {
+    /** The lines in the order the operator entered them (a Relation does not sort). */
+    val items: List<OrderItem> get() = itemRows.sortedWith(compareBy({ it.position }, { it.id }))
+
+    /** Number of units across all lines. */
+    val unitCount: Int get() = itemRows.sumOf { it.quantity }
+}
+
+/** A buyer with all of their orders and each order's items. Used by the Excel export. */
 data class BuyerWithOrders(
     @Embedded val buyer: Buyer,
-    @Relation(parentColumn = "id", entityColumn = "buyerId")
-    val orders: List<Order>,
+    @Relation(entity = Order::class, parentColumn = "id", entityColumn = "buyerId")
+    val orders: List<OrderWithItems>,
 )
 
 /** One row of the buyer list: the buyer, how many orders they have, and their latest order's state. */

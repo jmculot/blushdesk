@@ -80,15 +80,30 @@ interface ShowroomDao {
     @Update
     suspend fun updateOrder(order: Order)
 
+    /** The order's items go too, through ON DELETE CASCADE. */
     @Query("DELETE FROM orders WHERE id = :orderId")
     suspend fun deleteOrder(orderId: Long)
 
     @Query("SELECT * FROM orders WHERE id = :orderId")
     suspend fun getOrder(orderId: Long): Order?
 
-    /** Order history of one buyer, newest purchase first. */
+    @Transaction
+    @Query("SELECT * FROM orders WHERE id = :orderId")
+    suspend fun getOrderWithItems(orderId: Long): OrderWithItems?
+
+    /** Order history of one buyer, newest purchase first, each with its items. */
+    @Transaction
     @Query("SELECT * FROM orders WHERE buyerId = :buyerId ORDER BY purchaseDateTime DESC, id DESC")
-    fun observeOrdersForBuyer(buyerId: Long): Flow<List<Order>>
+    fun observeOrdersForBuyer(buyerId: Long): Flow<List<OrderWithItems>>
+
+    // ---- Order items ------------------------------------------------------------------------
+
+    @Insert
+    suspend fun insertItems(items: List<OrderItem>)
+
+    /** Used when an order is edited: its lines are replaced as a whole. */
+    @Query("DELETE FROM order_items WHERE orderId = :orderId")
+    suspend fun deleteItemsOfOrder(orderId: Long)
 
     @Query("UPDATE orders SET fulfillmentStatus = :status, updatedAt = :updatedAt WHERE id = :orderId")
     suspend fun updateFulfillmentStatus(orderId: Long, status: FulfillmentStatus, updatedAt: Instant)
@@ -134,7 +149,7 @@ interface ShowroomDao {
 
     // ---- Export -----------------------------------------------------------------------------
 
-    /** Every buyer with every order, for the Buyers and Orders sheets. */
+    /** Every buyer with every order and item, for the Buyers and Orders sheets. */
     @Transaction
     @Query("SELECT * FROM buyers ORDER BY fullName COLLATE NOCASE ASC, id ASC")
     suspend fun getAllBuyersWithOrders(): List<BuyerWithOrders>

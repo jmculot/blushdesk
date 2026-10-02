@@ -53,12 +53,13 @@ data class Buyer(
 )
 
 /**
- * One purchase of one product. `Buyer.id -> Order.buyerId`; deleting a buyer deletes their orders
- * (CASCADE), so no order can outlive its buyer.
+ * One purchase: when, how it was paid, where it is in the lifecycle, and its total. What was
+ * bought is in [OrderItem] (one row per product). `Buyer.id -> Order.buyerId`; deleting a buyer
+ * deletes their orders, and deleting an order deletes its items (both CASCADE).
  *
  * Money is [BigDecimal] in code and whole centavos (INTEGER) in the database, see [Converters]:
- * exact in both places, unlike Double. [totalAmount] is stored for reporting but is always
- * recomputed as unitPrice x quantity when an order is saved, never typed in.
+ * exact in both places, unlike Double. [totalAmount] is the sum of the items' line totals; it is
+ * stored so SQL can total sales quickly, but the repository recomputes it on every save.
  */
 @Entity(
     tableName = "orders",
@@ -75,14 +76,37 @@ data class Buyer(
 data class Order(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val buyerId: Long,
-    val productName: String,
-    val unitPrice: BigDecimal,
-    val quantity: Int,
-    val totalAmount: BigDecimal = Money.total(unitPrice, quantity),
+    val totalAmount: BigDecimal = Money.ZERO,
     val purchaseDateTime: Instant,
     val paymentMode: PaymentMode,
     val paymentStatus: PaymentStatus,
     val fulfillmentStatus: FulfillmentStatus = FulfillmentStatus.PROCESSING,
     val createdAt: Instant = purchaseDateTime,
     val updatedAt: Instant = purchaseDateTime,
+)
+
+/**
+ * One product line of an order. [lineTotal] = unitPrice x quantity, recomputed on every save and
+ * never typed in. [position] keeps the lines in the order the operator entered them.
+ */
+@Entity(
+    tableName = "order_items",
+    foreignKeys = [
+        ForeignKey(
+            entity = Order::class,
+            parentColumns = ["id"],
+            childColumns = ["orderId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("orderId")],
+)
+data class OrderItem(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val orderId: Long = 0,
+    val position: Int = 0,
+    val productName: String,
+    val unitPrice: BigDecimal,
+    val quantity: Int,
+    val lineTotal: BigDecimal = Money.total(unitPrice, quantity),
 )
