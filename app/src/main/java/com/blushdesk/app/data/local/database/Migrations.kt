@@ -144,3 +144,13 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_order_items_orderId` ON `order_items` (`orderId`)")
     }
 }
+
+/**
+ * Version 3 -> 4: buyers get a Facebook name, an alternative to the contact number, which became
+ * optional. Existing buyers keep their number and get an empty Facebook name.
+ */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `buyers` ADD COLUMN `facebookName` TEXT NOT NULL DEFAULT ''")
+    }
+}

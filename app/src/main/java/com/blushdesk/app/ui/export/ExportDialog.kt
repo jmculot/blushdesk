@@ -54,6 +54,7 @@ fun ExportDialog(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                SheetLine("Items", "Each order's products, with totals")
                 SheetLine("Buyers", plural(summary.buyerCount, "buyer"))
                 SheetLine("Orders", plural(summary.orderCount, "order"))
                 SheetLine("Operator", "Your profile and showroom")

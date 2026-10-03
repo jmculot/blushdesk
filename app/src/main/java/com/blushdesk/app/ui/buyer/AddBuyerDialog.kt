@@ -2,6 +2,7 @@ package com.blushdesk.app.ui.buyer
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Facebook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.MaterialTheme
@@ -34,8 +35,9 @@ fun AddBuyerDialog(
 ) = BuyerFormDialog(initial = null, photoActions = photoActions, onSave = onSave, onDismiss = onDismiss)
 
 /**
- * The buyer form shared by [AddBuyerDialog] ([initial] = null) and [EditBuyerDialog]: name,
- * contact number, optional email and photo. The date added is set once and never edited.
+ * The buyer form shared by [AddBuyerDialog] ([initial] = null) and [EditBuyerDialog]: name, a
+ * contact number or a Facebook name (at least one), optional email and photo. The date added is
+ * set once and never edited.
  */
 @Composable
 internal fun BuyerFormDialog(
@@ -47,15 +49,17 @@ internal fun BuyerFormDialog(
     val scope = rememberCoroutineScope()
     var fullName by rememberSaveable { mutableStateOf(initial?.fullName.orEmpty()) }
     var contact by rememberSaveable { mutableStateOf(initial?.contactNumber.orEmpty()) }
+    var facebook by rememberSaveable { mutableStateOf(initial?.facebookName.orEmpty()) }
     var email by rememberSaveable { mutableStateOf(initial?.email.orEmpty()) }
     var imageUri by rememberSaveable { mutableStateOf(initial?.profileImageUri) }
     var stagedPhoto by rememberSaveable { mutableStateOf<String?>(null) }
     var attempted by rememberSaveable { mutableStateOf(false) }
 
     val nameError = Validation.name(fullName, "Buyer name")
-    val contactError = Validation.phone(contact)
+    val contactError = Validation.buyerContact(contact, facebook)
+    val facebookError = Validation.facebookName(facebook)
     val emailError = Validation.email(email)
-    val valid = listOf(nameError, contactError, emailError).all { it == null }
+    val valid = listOf(nameError, contactError, facebookError, emailError).all { it == null }
 
     fun cancel() {
         photoActions.discard(stagedPhoto)
@@ -71,10 +75,17 @@ internal fun BuyerFormDialog(
             if (valid) {
                 stagedPhoto = null
                 onSave(
-                    initial?.copy(fullName = fullName, contactNumber = contact, email = email, profileImageUri = imageUri)
+                    initial?.copy(
+                        fullName = fullName,
+                        contactNumber = contact,
+                        facebookName = facebook,
+                        email = email,
+                        profileImageUri = imageUri,
+                    )
                         ?: Buyer(
                             fullName = fullName,
                             contactNumber = contact,
+                            facebookName = facebook,
                             email = email,
                             dateAdded = Instant.now(),
                             profileImageUri = imageUri,
@@ -116,6 +127,19 @@ internal fun BuyerFormDialog(
             keyboardType = KeyboardType.Phone,
             error = if (attempted) contactError else null,
             maxLength = 24,
+        )
+        FormField(
+            value = facebook,
+            onValueChange = { facebook = it },
+            label = "Facebook name",
+            leadingIcon = Icons.Filled.Facebook,
+            error = if (attempted) facebookError else null,
+            maxLength = Validation.MAX_NAME,
+        )
+        Text(
+            text = "A contact number or a Facebook name is enough. Add both if you have them.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         FormField(
             value = email,

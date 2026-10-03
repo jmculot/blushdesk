@@ -1,6 +1,7 @@
 package com.blushdesk.app.ui.showroom
 
 import android.database.sqlite.SQLiteException
+import androidx.lifecycle.SavedStateHandle
 import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.Order
 import com.blushdesk.app.data.local.database.OrderItem
@@ -100,6 +101,28 @@ class ShowroomViewModelTest {
         assertEquals(2L, vm.uiState.value.selectedBuyerId)
         assertEquals("Ana", vm.uiState.value.detail?.buyer?.fullName)
         assertFalse(vm.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `the selection survives Android closing the app in the background`() = runTest {
+        repo.saveBuyer(buyer("Ana"))
+        val ben = repo.saveBuyer(buyer("Ben"))
+        val bensOrder = repo.saveOrder(order(ben))
+        val saved = SavedStateHandle()
+        vm = ShowroomViewModel(repo, photos, docs, saved)
+        observe()
+        vm.selectBuyer(ben)
+        vm.selectOrder(bensOrder)
+        advanceUntilIdle()
+
+        // A new process gets a new view model, built from what the old one saved.
+        vm = ShowroomViewModel(repo, photos, docs, SavedStateHandle(saved.keys().associateWith { saved.get<Any>(it) }))
+        observe()
+        advanceUntilIdle()
+
+        assertEquals(ben, vm.uiState.value.selectedBuyerId)
+        assertEquals("Ben", vm.uiState.value.detail?.buyer?.fullName)
+        assertEquals(bensOrder, vm.uiState.value.selectedOrderId)
     }
 
     @Test

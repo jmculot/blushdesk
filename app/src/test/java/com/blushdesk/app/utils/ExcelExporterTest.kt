@@ -13,6 +13,7 @@ import com.blushdesk.app.domain.model.PaymentMode
 import com.blushdesk.app.domain.model.PaymentStatus
 import kotlinx.coroutines.test.runTest
 import org.apache.poi.ss.usermodel.CellType
+import org.apache.poi.xssf.usermodel.XSSFFormulaEvaluator
 import org.apache.poi.xssf.usermodel.XSSFSheet
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.junit.Assert.assertEquals
@@ -23,6 +24,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.time.Instant
 import java.time.ZoneId
 
@@ -42,7 +45,7 @@ class ExcelExporterTest {
     )
 
     private val ana = Buyer(id = 1, fullName = "Ana Reyes", contactNumber = "0917 123 4567", email = "ana@example.com", dateAdded = Instant.parse("2026-09-01T02:00:00Z"))
-    private val ben = Buyer(id = 2, fullName = "Ben Cruz", contactNumber = "0918 765 4321", dateAdded = Instant.parse("2026-09-05T02:00:00Z"))
+    private val ben = Buyer(id = 2, fullName = "Ben Cruz", contactNumber = "0918 765 4321", facebookName = "Ben Cruz Home", dateAdded = Instant.parse("2026-09-05T02:00:00Z"))
 
     private fun item(product: String, unit: String, qty: Int, position: Int = 0) =
         OrderItem(productName = product, unitPrice = Money.of(unit), quantity = qty, position = position)
@@ -91,28 +94,103 @@ class ExcelExporterTest {
     private fun XSSFSheet.headers(count: Int) = (0 until count).map { text(0, it) }
 
     @Test
-    fun `workbook has the four sheets in the specified order`() = runTest {
+    fun `workbook opens on the items sheet, then the four specified sheets`() = runTest {
         XSSFWorkbook(export().inputStream()).use { wb ->
-            assertEquals(listOf("Buyers", "Orders", "Operator", "Summary"), (0 until wb.numberOfSheets).map { wb.getSheetName(it) })
+            assertEquals(listOf("Items", "Buyers", "Orders", "Operator", "Summary"), (0 until wb.numberOfSheets).map { wb.getSheetName(it) })
+            assertEquals(0, wb.activeSheetIndex)
         }
     }
 
     @Test
-    fun `buyers sheet has the specified columns and one row per buyer`() = runTest {
+    fun `items sheet lists each order's products newest first with formula totals`() = runTest {
+        XSSFWorkbook(export().inputStream()).use { wb ->
+            val sheet = wb.getSheet("Items")
+            assertEquals(listOf("Product Name", "Quantity", "Price", "Total Amount"), sheet.headers(4))
+
+            // Newest order first: #11 (Oct 1, two products), #12 (Sep 25), #10 (Sep 20).
+            assertEquals("BD-000011 · Ana Reyes · Oct 1, 2026", sheet.text(1, 0))
+            assertEquals(listOf("Side Table", "Throw Pillow"), listOf(sheet.text(2, 0), sheet.text(3, 0)))
+            assertEquals(4.0, sheet.number(3, 1), 0.0)
+            assertEquals(450.0, sheet.number(3, 2), 0.0)
+            assertEquals("ROUND(B4*C4,2)", sheet.getRow(3).getCell(3).cellFormula)
+            assertEquals(1_800.0, sheet.number(3, 3), 0.0) // the stored result
+
+            assertEquals(ExcelExporter.ORDER_TOTAL_LABEL, sheet.text(4, 2))
+            assertEquals("SUM(D3:D4)", sheet.getRow(4).getCell(3).cellFormula)
+            assertEquals(5_300.0, sheet.number(4, 3), 0.0)
+
+            assertEquals("BD-000012 · Ben Cruz · Sep 25, 2026", sheet.text(6, 0))
+            assertEquals(2_999.97, sheet.number(8, 3), 0.0) // 999.99 x 3, rounded to the cent
+            assertEquals("BD-000010 · Ana Reyes · Sep 20, 2026", sheet.text(10, 0))
+            assertEquals(25_001.0, sheet.number(12, 3), 0.0)
+
+            val grand = sheet.getRow(14)
+            assertEquals("GRAND TOTAL", grand.getCell(0).stringCellValue)
+            assertEquals(CellType.FORMULA, grand.getCell(3).cellType)
+            assertEquals(33_300.97, grand.getCell(3).numericCellValue, 1e-9)
+            assertEquals(14, sheet.lastRowNum)
+        }
+    }
+
+    @Test
+    fun `items totals recalculate when a quantity is edited`() = runTest {
+        XSSFWorkbook(export().inputStream()).use { wb ->
+            val sheet = wb.getSheet("Items")
+            sheet.getRow(2).getCell(1).setCellValue(2.0) // Side Table: 1 -> 2
+            XSSFFormulaEvaluator.evaluateAllFormulaCells(wb)
+            assertEquals(7_000.0, sheet.number(2, 3), 0.0)
+            assertEquals(8_800.0, sheet.number(4, 3), 0.0)
+            assertEquals(36_800.97, sheet.number(14, 3), 1e-9)
+        }
+    }
+
+    /**
+     * Excel for Android rejects packages whose local headers leave the sizes to a trailing data
+     * descriptor (it reports them as password-protected), so every entry must carry its CRC and
+     * sizes up front, without ZIP64.
+     */
+    @Test
+    fun `every zip entry carries its crc and sizes in the local header`() = runTest {
+        val bytes = ByteBuffer.wrap(export().readBytes()).order(ByteOrder.LITTLE_ENDIAN)
+        var offset = 0
+        var entries = 0
+        while (bytes.getInt(offset) == LOCAL_HEADER) {
+            val versionNeeded = bytes.getShort(offset + 4).toInt()
+            val flags = bytes.getShort(offset + 6).toInt()
+            val crc = bytes.getInt(offset + 14)
+            val compressed = bytes.getInt(offset + 18)
+            val nameLength = bytes.getShort(offset + 26).toInt() and 0xFFFF
+            val extraLength = bytes.getShort(offset + 28).toInt() and 0xFFFF
+            assertEquals("no data descriptor (entry $entries)", 0, flags and 0x08)
+            assertEquals("no UTF-8 name flag (entry $entries)", 0, flags and 0x800)
+            assertEquals("plain deflate, no ZIP64 (entry $entries)", 20, versionNeeded)
+            assertTrue("CRC is filled in (entry $entries)", crc != 0)
+            assertTrue("size is filled in (entry $entries)", compressed > 0)
+            offset += 30 + nameLength + extraLength + compressed
+            entries++
+        }
+        assertTrue("found only $entries entries", entries >= 10)
+        assertEquals("the central directory follows the last entry", CENTRAL_HEADER, bytes.getInt(offset))
+    }
+
+    @Test
+    fun `buyers sheet has the specified columns plus the Facebook name, one row per buyer`() = runTest {
         XSSFWorkbook(export().inputStream()).use { wb ->
             val sheet = wb.getSheet("Buyers")
             assertEquals(
-                listOf("Buyer ID", "Full Name", "Contact Number", "Email", "Date Added", "Number of Orders"),
-                sheet.headers(6),
+                listOf("Buyer ID", "Full Name", "Contact Number", "Facebook Name", "Email", "Date Added", "Number of Orders"),
+                sheet.headers(7),
             )
             assertEquals(2, sheet.lastRowNum)
             assertEquals(1.0, sheet.number(1, 0), 0.0)
             assertEquals("Ana Reyes", sheet.text(1, 1))
             assertEquals("0917 123 4567", sheet.text(1, 2))
-            assertEquals("ana@example.com", sheet.text(1, 3))
-            assertEquals(2026, sheet.getRow(1).getCell(4).localDateTimeCellValue.year)
-            assertEquals(2.0, sheet.number(1, 5), 0.0) // orders, not products
-            assertEquals(1.0, sheet.number(2, 5), 0.0)
+            assertEquals("", sheet.text(1, 3))
+            assertEquals("Ben Cruz Home", sheet.text(2, 3))
+            assertEquals("ana@example.com", sheet.text(1, 4))
+            assertEquals(2026, sheet.getRow(1).getCell(5).localDateTimeCellValue.year)
+            assertEquals(2.0, sheet.number(1, 6), 0.0) // orders, not products
+            assertEquals(1.0, sheet.number(2, 6), 0.0)
         }
     }
 
@@ -216,7 +294,7 @@ class ExcelExporterTest {
     @Test
     fun `table sheets freeze their header and the order and buyer tables are filterable`() = runTest {
         XSSFWorkbook(export().inputStream()).use { wb ->
-            listOf("Buyers", "Orders", "Operator").forEach { name ->
+            listOf("Items", "Buyers", "Orders", "Operator").forEach { name ->
                 val pane = wb.getSheet(name).paneInformation
                 assertNotNull("$name should freeze its header", pane)
                 assertEquals(1, pane.horizontalSplitPosition.toInt())
@@ -230,6 +308,7 @@ class ExcelExporterTest {
         XSSFWorkbook(export(emptyList()).inputStream()).use { wb ->
             assertEquals(0, wb.getSheet("Orders").lastRowNum)
             assertEquals(0, wb.getSheet("Buyers").lastRowNum)
+            assertEquals("No orders yet", wb.getSheet("Items").text(1, 0))
         }
     }
 
@@ -239,5 +318,11 @@ class ExcelExporterTest {
         exporter.export(target, ExportSnapshot(operator, buyers, summary, Instant.EPOCH))
         assertTrue(target.length() > 100)
         assertFalse(File(folder.root, "out.xlsx.part").exists())
+        assertFalse(File(folder.root, "out.xlsx.raw").exists())
+    }
+
+    private companion object {
+        const val LOCAL_HEADER = 0x04034b50
+        const val CENTRAL_HEADER = 0x02014b50
     }
 }

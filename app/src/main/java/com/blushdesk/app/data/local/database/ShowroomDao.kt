@@ -53,7 +53,8 @@ interface ShowroomDao {
 
     /**
      * Buyers matching [pattern] (a ready-made LIKE pattern, see OfflineShowroomRepository) by name,
-     * contact number or email, each with an order count and the state of their latest order.
+     * contact number, Facebook name or email, each with an order count and the state of their
+     * latest order.
      */
     @Query(
         """
@@ -66,6 +67,7 @@ interface ShowroomDao {
         FROM buyers AS b
         WHERE b.fullName LIKE :pattern ESCAPE '\'
            OR b.contactNumber LIKE :pattern ESCAPE '\'
+           OR b.facebookName LIKE :pattern ESCAPE '\'
            OR b.email LIKE :pattern ESCAPE '\'
         ORDER BY b.fullName COLLATE NOCASE ASC, b.id ASC
         """,

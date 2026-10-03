@@ -155,6 +155,14 @@ class ShowroomDaoTest {
     }
 
     @Test
+    fun search_also_matches_the_facebook_name() = runBlocking {
+        dao.insertBuyer(TestData.buyer("Ana Reyes").copy(contactNumber = "", facebookName = "Ana Blush Home"))
+        dao.insertBuyer(TestData.buyer("Ben Cruz", email = "bc@shop.example"))
+
+        assertEquals(listOf("Ana Reyes"), search("blush home"))
+    }
+
+    @Test
     fun search_treats_percent_and_underscore_literally() = runBlocking {
         dao.insertBuyer(TestData.buyer("Ana 50% Off"))
         dao.insertBuyer(TestData.buyer("Ben Cruz"))

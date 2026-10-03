@@ -14,10 +14,12 @@ name, showroom, email and phone number. The app keeps one active profile. The fi
 for it, because every receipt carries it. The photo can be taken with the camera or picked with
 the Android Photo Picker.
 
-**Buyers.** Add, edit, search and delete buyers (full name, contact number, optional email,
-profile photo). The date added is set automatically. Each row in the buyer list shows the photo,
-name, contact number, number of orders, and the fulfillment and payment status of the latest
-order. Deleting a buyer deletes their orders too, after a confirmation.
+**Buyers.** Add, edit, search and delete buyers. A buyer has a full name, a contact number or a
+Facebook name (at least one, or both), an optional email and a profile photo. The date added is set
+automatically. Search matches the name, number, Facebook name or email. Each row in the buyer list
+shows the photo, name, contact number (or "Facebook: name"), number of orders, and the
+fulfillment and payment status of the latest order. Deleting a buyer deletes their orders too,
+after a confirmation.
 
 **Orders.** An order holds one or more products, up to 30. Each line has a product name, unit
 price and quantity. The line total (unit price × quantity) and the order total (the sum of the
@@ -35,7 +37,7 @@ directly, which is how a mis-tap is undone. Delivered orders turn green.
 **PDF receipts.** Only paid orders can get one. The button stays disabled with an explanation
 otherwise, and the generator itself refuses unpaid orders. The A4 receipt has:
 - the showroom details (operator, store, email, phone)
-- the buyer's details
+- the buyer's details (name, contact number and/or Facebook name, email)
 - one itemized row per product with unit price, quantity and line total; long orders continue
   on further pages under a compact header, with "Page x of y"
 - purchase date and time, payment method, payment status and fulfillment status
@@ -50,15 +52,23 @@ Files, Quick Share, ...):
 
 | Sheet    | Columns / contents |
 |----------|--------------------|
-| Buyers   | Buyer ID, Full Name, Contact Number, Email, Date Added, Number of Orders |
+| Items    | Opens first. Each order's products as Product Name, Quantity, Price, Total Amount, newest order first, with an order total under each order and a grand total at the end |
+| Buyers   | Buyer ID, Full Name, Contact Number, Facebook Name, Email, Date Added, Number of Orders |
 | Orders   | One row per product line: Order ID, Buyer ID, Buyer Name, Product, Unit Price, Quantity, Total Amount (that line), Purchase Date, Purchase Time, Payment Mode, Payment Status, Fulfillment Status, plus Order Total |
 | Operator | Operator Name, Store Name, Email, Phone Number |
 | Summary  | Total Buyers, Total Orders, Paid / Unpaid / Pending Orders, Processing / Preparing / Delivered Orders, Total Recorded Sales |
 
-The Orders sheet keeps the specification's twelve columns. "Order Total" was added when orders
-gained several products, so each row also shows its whole order's total. Headers are styled and
+The Items sheet was added to read orders on a tablet. Its totals are Excel formulas, so they
+recalculate if someone edits a quantity or price. The app also stores each formula's result, so
+previewers that never calculate (mail and Drive viewers) still show the numbers. The Orders sheet
+keeps the specification's twelve columns. "Order Total" was added when orders gained several
+products, and "Facebook Name" when buyers could be reached on Facebook. Headers are styled and
 frozen, the Buyers and Orders tables have filters, money uses a peso currency format, dates and
 times are real Excel dates, and status cells are color coded.
+
+The file is a plain ZIP: every part carries its size and checksum in its own header, the way Excel
+saves files. Apache POI streams the parts instead, leaving those fields empty. Desktop Excel
+accepts that, but Excel for Android refuses such a file and calls it password-protected.
 
 | New order with several products | Export dialog | Paid receipt | Share sheet |
 |---|---|---|---|
@@ -67,7 +77,8 @@ times are real Excel dates, and status cells are color coded.
 **Layout.** The app is designed for a landscape tablet: buyers on the left, the selected buyer's
 dashboard on the right. Windows narrower than 600dp (phone, split screen) switch to one pane at a
 time with a back arrow. This matters because Android 16+ ignores orientation locks on large
-screens.
+screens. An open form keeps what was typed when Android recreates the screen (a display-size
+change) or closes the app in the background. The selected buyer and order come back too.
 
 **Errors.** Messages are written for the operator. A broken rule, such as "Enter a valid phone
 number" or "Mark the order as paid before issuing a receipt", is shown as written. Any other
@@ -87,7 +98,7 @@ same in airplane mode.
 | Language | Kotlin 2.4, coroutines and Flow |
 | UI | Jetpack Compose, Material 3 (Compose BOM 2026.09) |
 | Architecture | MVVM with a repository (interface in `domain`, Room implementation in `data`), a small hand-written dependency container |
-| Database | Room 2.8 (KSP): entities, DAO, type converters, relations, an exported schema and a tested migration |
+| Database | Room 2.8 (KSP): entities, DAO, type converters, relations, exported schemas and tested migrations |
 | Excel | Apache POI 5.5 (`poi-ooxml`) |
 | PDF | Android's built-in `PdfDocument` canvas |
 | Images | Coil 3, `ExifInterface` |
@@ -132,10 +143,11 @@ run on the JVM with fakes.
 ```
 operator_profile (one active row)   buyers 1 ──── * orders 1 ──────────────── * order_items
   fullName, storeName, email,          id, fullName,           id, buyerId (FK, CASCADE),     id, orderId (FK, CASCADE),
-  phoneNumber, profileImageUri,        contactNumber, email,   totalAmount, purchaseDateTime, position, productName,
-  createdAt, updatedAt                 dateAdded,              paymentMode, paymentStatus,    unitPrice, quantity,
-                                       profileImageUri,        fulfillmentStatus,             lineTotal
-                                       createdAt, updatedAt    createdAt, updatedAt
+  phoneNumber, profileImageUri,        contactNumber,          totalAmount, purchaseDateTime, position, productName,
+  createdAt, updatedAt                 facebookName, email,    paymentMode, paymentStatus,    unitPrice, quantity,
+                                       dateAdded,              fulfillmentStatus,             lineTotal
+                                       profileImageUri,        createdAt, updatedAt
+                                       createdAt, updatedAt
 ```
 
 - Money is `BigDecimal` in code and centavos (INTEGER) in SQLite, so SQL `SUM()` is exact. A third
@@ -151,10 +163,11 @@ operator_profile (one active row)   buyers 1 ──── * orders 1 ───�
   - order totals
   - orders by payment status and by fulfillment status
   - the export data
-- The schema is exported to `app/schemas/`. Two hand-written migrations are tested with Room's
+- The schema is exported to `app/schemas/`. Three hand-written migrations are tested with Room's
   `MigrationTestHelper`:
   - version 1 → 2 moved to this specification's field names
   - version 2 → 3 moved products into `order_items`; each old order becomes an order with one line
+  - version 3 → 4 added `facebookName`; existing buyers keep their number and get an empty one
 - There is deliberately no destructive fallback: this is the shop's only copy of its records.
 
 ## Permissions, files and privacy
@@ -236,22 +249,27 @@ rules, install the release APK and do an Excel export and a receipt before shipp
 ## Tests
 
 ```bash
-./gradlew :app:testDebugUnitTest            # 66 JVM tests, no device needed
-./gradlew :app:connectedDebugAndroidTest    # 60 tests on a running emulator or device
+./gradlew :app:testDebugUnitTest            # 72 JVM tests, no device needed
+./gradlew :app:connectedDebugAndroidTest    # 73 tests on a running emulator or device
 ```
 
 - **Unit tests:**
   - money (parsing, totals, centavos), validation, date formats, enums and converters, LIKE escaping
-  - the Excel workbook (sheets, exact columns, values, formats; POI on the JVM)
+  - the Excel workbook (sheets, exact columns, values, formats, the Items formulas and their stored
+    results, the plain ZIP layout; POI on the JVM)
   - the theme's color initialization
-  - the view model against fakes: selection, order expansion, totals, lifecycle, deletes, friendly errors, exports
+  - the view model against fakes: selection (including after the app is closed in the background), order expansion, totals, lifecycle, deletes, friendly errors, exports
 - **Instrumented tests:**
   - every DAO query on real SQLite (cascade delete, foreign keys, latest-order status, totals, status lists, export summary, search with `%` and `_`)
-  - the v1 → v2 → v3 migrations
+  - the v1 → v2 → v3 → v4 migrations
   - the repository rules (recomputed totals, timestamps, validation, photo cleanup)
-  - Apache POI on Android's runtime
+  - Apache POI on Android's runtime, formula results included
   - PDF generation rendered back to pixels
   - photo import, Downloads saving, FileProvider rules
+  - the screens, with Compose UI tests:
+    - the order form: a new line scrolls into view with the cursor in it, totals follow what is typed, saving hands over every line
+    - the buyer form: a contact number or a Facebook name
+    - the whole screen keeping an open form and what was typed when it is recreated
 
 The PDF test writes PNG renders of each receipt to the app's `files/test-artifacts/` so a person
 can look at the output.
@@ -264,8 +282,12 @@ can look at the output.
 ## Known limitations
 
 - **The release build is checked by hand.** The automated tests run against the debug build. The
-  shrunk, signed release build was checked on the emulator: profile, buyers, a multi-product
-  order, receipt, sharing, Excel export (opened and checked on a PC) and photo import.
+  shrunk, signed release build was checked on the emulator: profile, buyers (including one reached
+  only on Facebook), a multi-product order, receipt, sharing, Excel export (pulled off the device
+  and checked on a PC, formula results included) and photo import.
+- **Excel for Android itself is untested here.** The emulator has no signed-in Play Store, so the
+  "password-protected" fix was checked against the file format (every ZIP header filled in, as
+  Excel writes them), not by opening the file in Excel for Android.
 - **Light theme only**, on purpose: the pink palette is the brand.
 - **Test coverage:** tested on an Android 15 (API 35) tablet emulator, not yet on an Android 16+
   device or real hardware.

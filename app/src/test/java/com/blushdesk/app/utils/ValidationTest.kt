@@ -77,6 +77,19 @@ class ValidationTest {
     }
 
     @Test
+    fun `a buyer needs a contact number, a Facebook name, or both`() {
+        val buyer = Buyer(fullName = "Ana", dateAdded = Instant.EPOCH)
+        assertEquals("Add a contact number or a Facebook name", Validation.buyerProblem(buyer))
+        assertEquals("Add a contact number or a Facebook name", Validation.buyerContact("  ", "  "))
+        assertNull(Validation.buyerProblem(buyer.copy(facebookName = "Ana Reyes PH")))
+        assertNull(Validation.buyerProblem(buyer.copy(contactNumber = "0917 123 4567")))
+        assertNull(Validation.buyerProblem(buyer.copy(contactNumber = "0917 123 4567", facebookName = "Ana Reyes PH")))
+        // A number that is given must still be a real one, even next to a Facebook name.
+        assertEquals("Enter a valid phone number", Validation.buyerProblem(buyer.copy(contactNumber = "123", facebookName = "Ana")))
+        assertNotNull(Validation.buyerProblem(buyer.copy(facebookName = "x".repeat(81))))
+    }
+
+    @Test
     fun `each product line and the list of lines are checked before saving`() {
         val item = OrderItem(productName = "Sofa", unitPrice = Money.of("10.00"), quantity = 1)
         assertNull(Validation.itemProblem(item))

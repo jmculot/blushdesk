@@ -150,6 +150,21 @@ class OfflineShowroomRepositoryTest {
     }
 
     @Test
+    fun a_buyer_can_be_reached_by_facebook_instead_of_a_phone() = runBlocking {
+        val id = repo.saveBuyer(TestData.buyer().copy(contactNumber = "", facebookName = "  Ana Blush Home  "))
+        val saved = repo.getBuyer(id)!!
+        assertEquals("", saved.contactNumber)
+        assertEquals("Ana Blush Home", saved.facebookName)
+
+        try {
+            repo.saveBuyer(TestData.buyer().copy(contactNumber = " ", facebookName = ""))
+            fail("expected a refusal")
+        } catch (e: UserFacingException) {
+            assertEquals("Add a contact number or a Facebook name", e.message)
+        }
+    }
+
+    @Test
     fun replacing_or_deleting_a_photo_deletes_the_old_file() = runBlocking {
         val id = repo.saveBuyer(TestData.buyer().copy(profileImageUri = "file:///photos/a.jpg"))
         repo.saveBuyer(repo.getBuyer(id)!!.copy(profileImageUri = "file:///photos/b.jpg"))

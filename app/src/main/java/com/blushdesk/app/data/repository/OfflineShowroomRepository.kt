@@ -86,6 +86,7 @@ class OfflineShowroomRepository(
         val clean = buyer.copy(
             fullName = buyer.fullName.trim(),
             contactNumber = buyer.contactNumber.trim(),
+            facebookName = buyer.facebookName.trim(),
             email = buyer.email.trim(),
         )
         Validation.buyerProblem(clean)?.let { throw UserFacingException(it) }

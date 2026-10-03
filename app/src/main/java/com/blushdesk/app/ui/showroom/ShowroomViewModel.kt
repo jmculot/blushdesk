@@ -2,8 +2,10 @@ package com.blushdesk.app.ui.showroom
 
 import android.net.Uri
 import android.util.Log
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -45,17 +47,26 @@ import kotlinx.coroutines.launch
  * arrive as [events]. Failures become friendly messages: a [UserFacingException] is shown as
  * written, anything else is logged and replaced with a generic sentence, so raw errors never
  * reach the operator.
+ *
+ * The selected buyer and order are kept in [savedState] as well, so they survive Android closing
+ * the app in the background. A form reopened after that has to belong to the same buyer.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ShowroomViewModel(
     private val repository: ShowroomRepository,
     private val photos: PhotoStore,
     private val documents: DocumentService,
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
 
     private val query = MutableStateFlow("")
-    private val selectedBuyerId = MutableStateFlow<Long?>(null)
-    private val selectedOrderId = MutableStateFlow<Long?>(null)
+    private val selectedBuyerId = MutableStateFlow(savedState.get<Long>(KEY_BUYER))
+    private val selectedOrderId = MutableStateFlow(savedState.get<Long>(KEY_ORDER))
+
+    init {
+        viewModelScope.launch { selectedBuyerId.collect { savedState[KEY_BUYER] = it } }
+        viewModelScope.launch { selectedOrderId.collect { savedState[KEY_ORDER] = it } }
+    }
     private val busy = MutableStateFlow(Busy())
 
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
@@ -246,10 +257,12 @@ class ShowroomViewModel(
     companion object {
         private const val TAG = "ShowroomViewModel"
         private const val STOP_TIMEOUT_MS = 5_000L
+        private const val KEY_BUYER = "selectedBuyerId"
+        private const val KEY_ORDER = "selectedOrderId"
 
         fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
             initializer {
-                ShowroomViewModel(container.repository, container.photoStorage, container.documents)
+                ShowroomViewModel(container.repository, container.photoStorage, container.documents, createSavedStateHandle())
             }
         }
     }

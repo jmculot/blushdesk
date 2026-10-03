@@ -247,6 +247,10 @@ class PdfReceiptGenerator {
                 line(buyer.contactNumber, leftX, y, 11f, BrandPalette.DARK_TEXT, maxWidth = dividerX - leftX - 14f)
                 y += 18f
             }
+            if (buyer.facebookName.isNotBlank()) {
+                line("Facebook: ${buyer.facebookName}", leftX, y, 11f, BrandPalette.DARK_TEXT, maxWidth = dividerX - leftX - 14f)
+                y += 18f
+            }
             if (buyer.email.isNotBlank()) {
                 line(buyer.email, leftX, y, 11f, BrandPalette.MUTED_TEXT_ON_TINT, maxWidth = dividerX - leftX - 14f)
             }
