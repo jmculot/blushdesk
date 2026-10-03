@@ -126,7 +126,6 @@ dependencies {
     implementation(libs.coil.compose)
 
     implementation(libs.poi.ooxml)
-    implementation(libs.aalto.xml)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

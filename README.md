@@ -88,7 +88,7 @@ same in airplane mode.
 | UI | Jetpack Compose, Material 3 (Compose BOM 2026.09) |
 | Architecture | MVVM with a repository (interface in `domain`, Room implementation in `data`), a small hand-written dependency container |
 | Database | Room 2.8 (KSP): entities, DAO, type converters, relations, an exported schema and a tested migration |
-| Excel | Apache POI 5.5 (`poi-ooxml`), with `aalto-xml` supplying the XML streaming API Android lacks |
+| Excel | Apache POI 5.5 (`poi-ooxml`) |
 | PDF | Android's built-in `PdfDocument` canvas |
 | Images | Coil 3, `ExifInterface` |
 | Build | AGP 9.4, Gradle 9.8, compileSdk 37, targetSdk 37, minSdk 29 (Android 10) |
@@ -206,6 +206,33 @@ platform 37 installed.
 For the intended experience use a tablet emulator in landscape (for example a 10.1" WXGA profile).
 On first launch the app asks for the operator's profile.
 
+### Release build
+
+Release builds are shrunk with R8, which brings the APK from about 70 MB down to about 13 MB. They
+are signed when a `keystore.properties` file sits at the project root.
+
+1. Create a signing key once. Keep the key file and its password safe: an installed release can
+   only be updated by an APK signed with the same key. `keytool` comes with Android Studio's JDK.
+
+   ```bash
+   keytool -genkeypair -keystore ~/.android/blushdesk-release.jks -storetype PKCS12 -alias blushdesk -keyalg RSA -keysize 4096 -validity 10000
+   ```
+
+2. Copy `keystore.properties.example` to `keystore.properties` and fill it in. Git ignores
+   `keystore.properties` and every `*.jks` / `*.keystore` file.
+3. Build:
+
+   ```bash
+   ./gradlew :app:assembleRelease      # app/build/outputs/apk/release/app-release.apk
+   ```
+
+Without `keystore.properties` the same command still builds, but the APK is unsigned.
+
+Apache POI loads schema classes and data files by name, so `app/proguard-rules.pro` tells R8
+what to keep. A missing rule does not fail the build. It shows up only when the app runs, as
+"Couldn't create the Excel file", with the cause in logcat. After changing dependencies or those
+rules, install the release APK and do an Excel export and a receipt before shipping it.
+
 ## Tests
 
 ```bash
@@ -236,9 +263,9 @@ can look at the output.
 
 ## Known limitations
 
-- **Release builds** run without R8 shrinking, so the unsigned release APK is about 70 MB. Apache
-  POI loads schema classes by name; `app/proguard-rules.pro` has a starting set of keep rules,
-  but shrinking has not been verified, so it is off. No release signing is configured.
+- **The release build is checked by hand.** The automated tests run against the debug build. The
+  shrunk, signed release build was checked on the emulator: profile, buyers, a multi-product
+  order, receipt, sharing, Excel export (opened and checked on a PC) and photo import.
 - **Light theme only**, on purpose: the pink palette is the brand.
 - **Test coverage:** tested on an Android 15 (API 35) tablet emulator, not yet on an Android 16+
   device or real hardware.
