@@ -371,7 +371,7 @@ private fun ShowroomTopBar(
                     )
                 }
                 Column(modifier = Modifier.padding(start = Dimens.spaceM)) {
-                    Text("BlushDesk", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.secondary)
+                    Text("Fergbentables", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.secondary)
                     if (!compact) {
                         Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
