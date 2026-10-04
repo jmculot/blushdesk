@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -40,8 +41,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.blushdesk.app.data.local.database.Buyer
-import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.domain.model.PaymentStatus
 import com.blushdesk.app.ui.buyer.AddBuyerDialog
 import com.blushdesk.app.ui.buyer.BuyerDetailActions
@@ -65,19 +64,60 @@ import com.blushdesk.app.utils.ReceiptDocument
 import com.blushdesk.app.utils.Sharing
 import kotlinx.coroutines.launch
 
-/** Which modal, if any, is open. Only one at a time, so a single value is enough. */
+/**
+ * Which modal, if any, is open. Only one at a time, so a single value is enough.
+ *
+ * Records are referred to by id and looked up in the current state when the dialog is drawn. That
+ * keeps the value small enough to save with the screen ([ActiveDialogSaver]), so an open form
+ * survives Android recreating the activity (a display-size change) or closing the app in the
+ * background. What was typed comes back too, because every form keeps its fields with
+ * rememberSaveable.
+ */
 private sealed interface ActiveDialog {
     data object None : ActiveDialog
     data object EditProfile : ActiveDialog
     data object AddBuyer : ActiveDialog
-    data class EditBuyer(val buyer: Buyer) : ActiveDialog
-    data object AddOrder : ActiveDialog
-    data class EditOrder(val order: OrderWithItems) : ActiveDialog
-    data object DeleteBuyer : ActiveDialog
-    data class DeleteOrder(val order: OrderWithItems) : ActiveDialog
+    data class EditBuyer(val buyerId: Long) : ActiveDialog
+    data class AddOrder(val buyerId: Long) : ActiveDialog
+    data class EditOrder(val orderId: Long) : ActiveDialog
+    data class DeleteBuyer(val buyerId: Long) : ActiveDialog
+    data class DeleteOrder(val orderId: Long) : ActiveDialog
     data object Export : ActiveDialog
+
+    /** Not saved: the receipt is already in Downloads, so losing this dialog loses nothing. */
     data class ReceiptReady(val receipt: ReceiptDocument) : ActiveDialog
 }
+
+/** Saves an [ActiveDialog] as a kind and, where it has one, a record id: both fit in a Bundle. */
+private val ActiveDialogSaver = listSaver<ActiveDialog, Any>(
+    save = { dialog ->
+        when (dialog) {
+            ActiveDialog.None, is ActiveDialog.ReceiptReady -> emptyList()
+            ActiveDialog.EditProfile -> listOf("profile")
+            ActiveDialog.AddBuyer -> listOf("addBuyer")
+            ActiveDialog.Export -> listOf("export")
+            is ActiveDialog.EditBuyer -> listOf("editBuyer", dialog.buyerId)
+            is ActiveDialog.AddOrder -> listOf("addOrder", dialog.buyerId)
+            is ActiveDialog.EditOrder -> listOf("editOrder", dialog.orderId)
+            is ActiveDialog.DeleteBuyer -> listOf("deleteBuyer", dialog.buyerId)
+            is ActiveDialog.DeleteOrder -> listOf("deleteOrder", dialog.orderId)
+        }
+    },
+    restore = { saved ->
+        val id = saved.getOrNull(1) as? Long
+        when (saved.firstOrNull()) {
+            "profile" -> ActiveDialog.EditProfile
+            "addBuyer" -> ActiveDialog.AddBuyer
+            "export" -> ActiveDialog.Export
+            "editBuyer" -> id?.let(ActiveDialog::EditBuyer)
+            "addOrder" -> id?.let(ActiveDialog::AddOrder)
+            "editOrder" -> id?.let(ActiveDialog::EditOrder)
+            "deleteBuyer" -> id?.let(ActiveDialog::DeleteBuyer)
+            "deleteOrder" -> id?.let(ActiveDialog::DeleteOrder)
+            else -> null
+        } ?: ActiveDialog.None
+    },
+)
 
 /**
  * The app's one screen: an adaptive master-detail layout. At 600dp and wider both panes show side
@@ -91,7 +131,7 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
-    var dialog by remember { mutableStateOf<ActiveDialog>(ActiveDialog.None) }
+    var dialog by rememberSaveable(stateSaver = ActiveDialogSaver) { mutableStateOf<ActiveDialog>(ActiveDialog.None) }
     var showDetailWhenCompact by rememberSaveable { mutableStateOf(false) }
     var askedForProfile by rememberSaveable { mutableStateOf(false) }
 
@@ -125,6 +165,21 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
         }
     }
 
+    // A dialog about a record that is no longer there closes itself. Nothing is decided while the
+    // buyer is still loading (after a restore), so a reopened form waits for its record instead.
+    LaunchedEffect(dialog, state.detail) {
+        val detail = state.detail ?: return@LaunchedEffect
+        val gone = when (val open = dialog) {
+            is ActiveDialog.EditBuyer -> detail.buyer.id != open.buyerId
+            is ActiveDialog.AddOrder -> detail.buyer.id != open.buyerId
+            is ActiveDialog.DeleteBuyer -> detail.buyer.id != open.buyerId
+            is ActiveDialog.EditOrder -> detail.orders.none { it.order.id == open.orderId }
+            is ActiveDialog.DeleteOrder -> detail.orders.none { it.order.id == open.orderId }
+            else -> false
+        }
+        if (gone) dialog = ActiveDialog.None
+    }
+
     // First launch: ask for the operator's details once, since every receipt needs them.
     LaunchedEffect(state.operatorLoaded, state.operator.isSetUp) {
         if (state.operatorLoaded && !state.operator.isSetUp && !askedForProfile) {
@@ -144,14 +199,14 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
         BackHandler(enabled = detailOnly) { showDetailWhenCompact = false }
 
         val detailActions = BuyerDetailActions(
-            onEditBuyer = { state.detail?.buyer?.let { dialog = ActiveDialog.EditBuyer(it) } },
-            onDeleteBuyer = { dialog = ActiveDialog.DeleteBuyer },
-            onAddOrder = { if (state.detail != null) dialog = ActiveDialog.AddOrder },
+            onEditBuyer = { state.detail?.buyer?.let { dialog = ActiveDialog.EditBuyer(it.id) } },
+            onDeleteBuyer = { state.detail?.buyer?.let { dialog = ActiveDialog.DeleteBuyer(it.id) } },
+            onAddOrder = { state.detail?.buyer?.let { dialog = ActiveDialog.AddOrder(it.id) } },
             onAddBuyer = { dialog = ActiveDialog.AddBuyer },
             onSelectOrder = viewModel::selectOrder,
             order = OrderActions(
-                onEdit = { dialog = ActiveDialog.EditOrder(it) },
-                onDelete = { dialog = ActiveDialog.DeleteOrder(it) },
+                onEdit = { dialog = ActiveDialog.EditOrder(it.order.id) },
+                onDelete = { dialog = ActiveDialog.DeleteOrder(it.order.id) },
                 onAdvance = { viewModel.advanceOrder(it.order) },
                 onSetFulfillment = { order, status -> viewModel.setFulfillmentStatus(order.order.id, status) },
                 onMarkPaid = { viewModel.setPaymentStatus(it.order.id, PaymentStatus.PAID) },
@@ -183,8 +238,8 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
                     onEditProfile = { dialog = ActiveDialog.EditProfile },
                     onAddBuyer = { dialog = ActiveDialog.AddBuyer },
                     onAddOrder = {
-                        if (state.detail != null) {
-                            dialog = ActiveDialog.AddOrder
+                        state.detail?.buyer?.let {
+                            dialog = ActiveDialog.AddOrder(it.id)
                             showDetailWhenCompact = true
                         }
                     },
@@ -223,6 +278,8 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
     }
 
     val dismiss = { dialog = ActiveDialog.None }
+    fun buyerOf(id: Long) = state.detail?.buyer?.takeIf { it.id == id }
+    fun orderOf(id: Long) = state.detail?.orders?.firstOrNull { it.order.id == id }
     when (val active = dialog) {
         ActiveDialog.None -> Unit
 
@@ -246,17 +303,19 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
             onDismiss = dismiss,
         )
 
-        is ActiveDialog.EditBuyer -> EditBuyerDialog(
-            buyer = active.buyer,
-            photoActions = photoActions,
-            onSave = {
-                viewModel.saveBuyer(it)
-                dismiss()
-            },
-            onDismiss = dismiss,
-        )
+        is ActiveDialog.EditBuyer -> buyerOf(active.buyerId)?.let { buyer ->
+            EditBuyerDialog(
+                buyer = buyer,
+                photoActions = photoActions,
+                onSave = {
+                    viewModel.saveBuyer(it)
+                    dismiss()
+                },
+                onDismiss = dismiss,
+            )
+        }
 
-        ActiveDialog.AddOrder -> state.detail?.buyer?.let { buyer ->
+        is ActiveDialog.AddOrder -> buyerOf(active.buyerId)?.let { buyer ->
             AddOrderDialog(
                 buyerId = buyer.id,
                 buyerName = buyer.fullName,
@@ -268,17 +327,19 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
             )
         }
 
-        is ActiveDialog.EditOrder -> EditOrderDialog(
-            order = active.order,
-            buyerName = state.detail?.buyer?.fullName.orEmpty(),
-            onSave = { order, items ->
-                viewModel.saveOrder(order, items)
-                dismiss()
-            },
-            onDismiss = dismiss,
-        )
+        is ActiveDialog.EditOrder -> orderOf(active.orderId)?.let { order ->
+            EditOrderDialog(
+                order = order,
+                buyerName = state.detail?.buyer?.fullName.orEmpty(),
+                onSave = { edited, items ->
+                    viewModel.saveOrder(edited, items)
+                    dismiss()
+                },
+                onDismiss = dismiss,
+            )
+        }
 
-        ActiveDialog.DeleteBuyer -> state.detail?.let { detail ->
+        is ActiveDialog.DeleteBuyer -> state.detail?.takeIf { it.buyer.id == active.buyerId }?.let { detail ->
             val orders = detail.orders.size
             DeleteConfirmationDialog(
                 title = "Delete ${detail.buyer.fullName}?",
@@ -296,16 +357,18 @@ fun ShowroomTabletScreen(viewModel: ShowroomViewModel) {
             )
         }
 
-        is ActiveDialog.DeleteOrder -> DeleteConfirmationDialog(
-            title = "Delete this order?",
-            message = "${Formats.itemsSummary(active.order.items.map { it.productName })} " +
-                "(${Formats.orderNumber(active.order.order.id)}) will be removed. This cannot be undone.",
-            onConfirm = {
-                viewModel.deleteOrder(active.order.order.id)
-                dismiss()
-            },
-            onDismiss = dismiss,
-        )
+        is ActiveDialog.DeleteOrder -> orderOf(active.orderId)?.let { order ->
+            DeleteConfirmationDialog(
+                title = "Delete this order?",
+                message = "${Formats.itemsSummary(order.items.map { it.productName })} " +
+                    "(${Formats.orderNumber(order.order.id)}) will be removed. This cannot be undone.",
+                onConfirm = {
+                    viewModel.deleteOrder(order.order.id)
+                    dismiss()
+                },
+                onDismiss = dismiss,
+            )
+        }
 
         ActiveDialog.Export -> ExportDialog(
             summary = state.summary,

@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Facebook
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -64,7 +65,8 @@ fun BuyerDetailHeader(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.semantics { heading() },
                 )
-                InfoLine(Icons.Filled.Phone, buyer.contactNumber, "Contact number")
+                if (buyer.contactNumber.isNotBlank()) InfoLine(Icons.Filled.Phone, buyer.contactNumber, "Contact number")
+                if (buyer.facebookName.isNotBlank()) InfoLine(Icons.Filled.Facebook, buyer.facebookName, "Facebook name")
                 if (buyer.email.isNotBlank()) InfoLine(Icons.Filled.Email, buyer.email, "Email")
                 InfoLine(Icons.Filled.CalendarMonth, "Added ${Formats.date(buyer.dateAdded)}", "Date added")
             }

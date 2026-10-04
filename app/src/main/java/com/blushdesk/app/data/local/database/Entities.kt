@@ -1,5 +1,6 @@
 package com.blushdesk.app.data.local.database
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -37,6 +38,11 @@ data class OperatorProfile(
     }
 }
 
+/**
+ * A customer. They can be reached by [contactNumber], by [facebookName], or both; the rule that at
+ * least one is filled in lives in [com.blushdesk.app.utils.Validation.buyerContact]. Email is
+ * optional.
+ */
 @Entity(
     tableName = "buyers",
     indices = [Index("fullName")],
@@ -44,7 +50,9 @@ data class OperatorProfile(
 data class Buyer(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val fullName: String,
-    val contactNumber: String,
+    val contactNumber: String = "",
+    /** Added in schema version 4; buyers recorded before that have an empty one. */
+    @ColumnInfo(defaultValue = "") val facebookName: String = "",
     val email: String = "",
     val dateAdded: Instant,
     val profileImageUri: String? = null,

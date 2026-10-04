@@ -62,4 +62,11 @@ class FormatsTest {
         assertEquals("buyer", Formats.fileSafe("???"))
         assertEquals(40, Formats.fileSafe("a".repeat(100)).length)
     }
+
+    @Test
+    fun `contact line prefers the phone and falls back to the Facebook name`() {
+        assertEquals("0917 123 4567", Formats.contactLine("0917 123 4567", "Ana PH"))
+        assertEquals("Facebook: Ana PH", Formats.contactLine("", "Ana PH"))
+        assertEquals("", Formats.contactLine("", ""))
+    }
 }

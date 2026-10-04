@@ -115,6 +115,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    // The empty activity Compose UI tests render into; debug builds only, never in a release.
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(platform(libs.kotlinx.serialization.bom))
@@ -126,7 +128,6 @@ dependencies {
     implementation(libs.coil.compose)
 
     implementation(libs.poi.ooxml)
-    implementation(libs.aalto.xml)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
@@ -135,4 +136,6 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
 }

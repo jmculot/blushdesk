@@ -42,6 +42,19 @@ object Validation {
         return null
     }
 
+    /** A Facebook name is free text, so a display name or a profile link both work. */
+    fun facebookName(value: String): String? =
+        if (value.trim().length > MAX_NAME) "Keep it under $MAX_NAME characters" else null
+
+    /**
+     * A buyer has to be reachable: a contact number, a Facebook name, or both. The number is only
+     * checked when one is given.
+     */
+    fun buyerContact(phone: String, facebookName: String): String? = when {
+        phone.isBlank() && facebookName.isBlank() -> "Add a contact number or a Facebook name"
+        else -> phone(phone, required = false)
+    }
+
     fun product(value: String): String? = when {
         value.isBlank() -> "Product name is required"
         value.trim().length > MAX_PRODUCT -> "Keep it under $MAX_PRODUCT characters"
@@ -75,7 +88,10 @@ object Validation {
 
     /** The first problem with a buyer about to be saved, or null. */
     fun buyerProblem(buyer: Buyer): String? =
-        name(buyer.fullName, "Buyer name") ?: phone(buyer.contactNumber) ?: email(buyer.email)
+        name(buyer.fullName, "Buyer name")
+            ?: buyerContact(buyer.contactNumber, buyer.facebookName)
+            ?: facebookName(buyer.facebookName)
+            ?: email(buyer.email)
 
     /** The first problem with one product line, or null. */
     fun itemProblem(item: OrderItem): String? =

@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.blushdesk.app.data.local.database.AppDatabase
 import com.blushdesk.app.data.local.database.MIGRATION_1_2
 import com.blushdesk.app.data.local.database.MIGRATION_2_3
+import com.blushdesk.app.data.local.database.MIGRATION_3_4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -13,9 +14,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Builds a version-1 database from the exported 1.json schema, fills it the way the first release
- * stored data, runs [MIGRATION_1_2] and lets Room validate the result against 2.json. Then checks
- * every renamed or derived value survived.
+ * Builds an older database from its exported schema (1.json, 2.json, ...), fills it the way that
+ * release stored data, runs the migrations and lets Room validate the result against the newer
+ * schema. Then checks every renamed, moved or derived value survived.
  */
 @RunWith(AndroidJUnit4::class)
 class MigrationTest {
@@ -146,7 +147,27 @@ class MigrationTest {
     }
 
     @Test
-    fun first_release_data_survives_both_migrations() {
+    fun migrate_3_to_4_gives_existing_buyers_an_empty_facebook_name() {
+        helper.createDatabase(dbName, 3).apply {
+            execSQL(
+                "INSERT INTO buyers (id, fullName, contactNumber, email, dateAdded, profileImageUri, createdAt, updatedAt) " +
+                    "VALUES (1, 'Ana', '0917 123 4567', '', 1000, NULL, 1000, 1000)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(dbName, 4, true, MIGRATION_3_4)
+
+        db.query("SELECT contactNumber, facebookName FROM buyers WHERE id = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("0917 123 4567", c.getString(0))
+            assertEquals("", c.getString(1))
+        }
+        db.close()
+    }
+
+    @Test
+    fun first_release_data_survives_every_migration() {
         helper.createDatabase(dbName, 1).apply {
             execSQL("INSERT INTO buyers (id, fullName, contact, email, dateAdded, photoPath) VALUES (1, 'Ben', '0918 765 4321', '', 1000, NULL)")
             execSQL(
@@ -156,8 +177,13 @@ class MigrationTest {
             close()
         }
 
-        val db = helper.runMigrationsAndValidate(dbName, 3, true, MIGRATION_1_2, MIGRATION_2_3)
+        val db = helper.runMigrationsAndValidate(dbName, 4, true, MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
+        db.query("SELECT contactNumber, facebookName FROM buyers").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("0918 765 4321", c.getString(0))
+            assertEquals("", c.getString(1))
+        }
         db.query("SELECT o.totalAmount, o.paymentMode, i.productName, i.lineTotal FROM orders o JOIN order_items i ON i.orderId = o.id").use { c ->
             assertTrue(c.moveToFirst())
             assertEquals(299997L, c.getLong(0))

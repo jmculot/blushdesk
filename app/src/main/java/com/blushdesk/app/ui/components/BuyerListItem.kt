@@ -15,6 +15,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.blushdesk.app.data.local.database.BuyerListItem
 import com.blushdesk.app.ui.theme.Dimens
 import com.blushdesk.app.ui.theme.ShowroomTheme
+import com.blushdesk.app.utils.Formats
 
 /**
  * One buyer in the list: photo, name, contact number, order count, and the fulfillment and payment
@@ -56,7 +57,7 @@ fun BuyerListItemCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = item.buyer.contactNumber,
+                    text = Formats.contactLine(item.buyer.contactNumber, item.buyer.facebookName),
                     style = MaterialTheme.typography.bodySmall,
                     color = secondaryText,
                     maxLines = 1,

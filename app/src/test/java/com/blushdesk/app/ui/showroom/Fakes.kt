@@ -59,7 +59,7 @@ class FakeRepository : ShowroomRepository {
 
     override fun searchBuyers(query: String): Flow<List<BuyerListItem>> = combine(buyers, orders) { b, o ->
         val q = query.trim().lowercase()
-        b.filter { q.isEmpty() || it.fullName.lowercase().contains(q) || it.contactNumber.contains(q) || it.email.lowercase().contains(q) }
+        b.filter { q.isEmpty() || it.fullName.lowercase().contains(q) || it.contactNumber.contains(q) || it.facebookName.lowercase().contains(q) || it.email.lowercase().contains(q) }
             .sortedBy { it.fullName.lowercase() }
             .map { buyer ->
                 val mine = o.filter { it.buyerId == buyer.id }.sortedByDescending { it.purchaseDateTime }

@@ -29,22 +29,25 @@ class ExcelExporterAndroidTest {
     }
 
     @Test
-    fun writes_a_real_xlsx_package_with_four_worksheets() {
+    fun writes_a_plain_xlsx_package_with_five_worksheets() {
         val file = exportSample()
         assertTrue(file.length() > 2_000)
         ZipFile(file).use { zip ->
             val entries = zip.entries().asSequence().map { it.name }.toSet()
             assertTrue("workbook part", "xl/workbook.xml" in entries)
             assertTrue("styles part", "xl/styles.xml" in entries)
-            assertTrue("four worksheets", (1..4).all { "xl/worksheets/sheet$it.xml" in entries })
+            assertTrue("five worksheets", (1..5).all { "xl/worksheets/sheet$it.xml" in entries })
         }
+        // The rewrite to a plain ZIP also runs on ART: no data-descriptor flag in the first header.
+        val head = file.inputStream().use { it.readNBytes(8) }
+        assertEquals(0, head[6].toInt() and 0x08)
     }
 
     @Test
     fun reads_back_on_android_with_the_specified_sheets_and_values() {
         exportSample().inputStream().use { input ->
             XSSFWorkbook(input).use { workbook ->
-                assertEquals(listOf("Buyers", "Orders", "Operator", "Summary"), (0 until workbook.numberOfSheets).map { workbook.getSheetName(it) })
+                assertEquals(listOf("Items", "Buyers", "Orders", "Operator", "Summary"), (0 until workbook.numberOfSheets).map { workbook.getSheetName(it) })
 
                 val orders = workbook.getSheet("Orders")
                 assertEquals(4, orders.lastRowNum) // one row per product line: 1 + 2 + 1
@@ -54,6 +57,13 @@ class ExcelExporterAndroidTest {
                 assertEquals(25_001.00, orders.getRow(1).getCell(6).numericCellValue, 0.0)
                 assertEquals("Paid", orders.getRow(1).getCell(10).stringCellValue)
                 assertEquals("Delivered", orders.getRow(1).getCell(11).stringCellValue)
+
+                // POI's formula evaluator ran on ART too: the grand total's stored result is the sum of every line.
+                val items = workbook.getSheet("Items")
+                val grand = items.getRow(items.lastRowNum)
+                assertEquals("GRAND TOTAL", grand.getCell(0).stringCellValue)
+                val lineTotals = (1..orders.lastRowNum).sumOf { orders.getRow(it).getCell(6).numericCellValue }
+                assertEquals(lineTotals, grand.getCell(3).numericCellValue, 1e-6)
 
                 assertEquals("Ana Reyes", workbook.getSheet("Buyers").getRow(1).getCell(1).stringCellValue)
                 assertEquals("Lia Santos", workbook.getSheet("Operator").getRow(1).getCell(0).stringCellValue)

@@ -1,12 +1,17 @@
 package com.blushdesk.app.utils
 
+import com.blushdesk.app.data.local.database.Buyer
 import com.blushdesk.app.data.local.database.BuyerWithOrders
 import com.blushdesk.app.data.local.database.ExportSummary
 import com.blushdesk.app.data.local.database.OperatorProfile
+import com.blushdesk.app.data.local.database.OrderWithItems
 import com.blushdesk.app.domain.model.ExportSnapshot
 import com.blushdesk.app.ui.theme.BrandPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.apache.commons.compress.archivers.zip.Zip64Mode
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.apache.poi.ss.usermodel.BorderStyle
 import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.ss.usermodel.HorizontalAlignment
@@ -15,22 +20,28 @@ import org.apache.poi.ss.util.CellRangeAddress
 import org.apache.poi.xssf.usermodel.XSSFCellStyle
 import org.apache.poi.xssf.usermodel.XSSFColor
 import org.apache.poi.xssf.usermodel.XSSFFont
+import org.apache.poi.xssf.usermodel.XSSFFormulaEvaluator
 import org.apache.poi.xssf.usermodel.XSSFRow
 import org.apache.poi.xssf.usermodel.XSSFSheet
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileOutputStream
 import java.time.ZoneId
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 
 /**
- * Writes the whole database to a formatted .xlsx with four sheets: Buyers, Orders, Operator and
- * Summary. Runs on [Dispatchers.IO].
+ * Writes the whole database to a formatted .xlsx with five sheets: Items (opens first), Buyers,
+ * Orders, Operator and Summary. Runs on [Dispatchers.IO].
  *
  * Apache POI is a desktop-Java library, so a few of its habits are avoided on purpose:
  *  - No `autoSizeColumn`: it measures text with java.awt.font, which Android does not have.
  *    Column widths are fixed instead.
- *  - No formulas: POI stores no cached results, so previewers that do not recalculate (mail and
- *    Drive viewers) would show blanks. Figures are written as plain values.
+ *  - Formulas only where they earn it (the Items sheet's totals), and POI evaluates them before
+ *    saving. Without the stored results, previewers that do not recalculate (mail and Drive
+ *    viewers) would show blank totals. The other sheets hold plain values.
+ *  - POI's ZIP output is rewritten as a plain ZIP; see [rewriteAsPlainZip] for why Excel on
+ *    Android needs that.
  *  - The workbook is written to a `.part` file and renamed, so a failure never leaves a truncated
  *    file that could be shared as if it were good.
  *
@@ -40,22 +51,28 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
 
     /** Builds the workbook for [snapshot] into [destination] and returns it. */
     suspend fun export(destination: File, snapshot: ExportSnapshot): File = withContext(Dispatchers.IO) {
-        destination.absoluteFile.parentFile?.mkdirs()
-        val partial = File(destination.absoluteFile.parentFile, destination.name + ".part")
+        val folder = destination.absoluteFile.parentFile
+        folder?.mkdirs()
+        val raw = File(folder, destination.name + ".raw")
+        val partial = File(folder, destination.name + ".part")
         try {
             XSSFWorkbook().use { workbook ->
                 val styles = Styles(workbook)
+                writeItems(workbook.createSheet(SHEET_ITEMS), styles, snapshot.buyers)
                 writeBuyers(workbook.createSheet(SHEET_BUYERS), styles, snapshot.buyers)
                 writeOrders(workbook.createSheet(SHEET_ORDERS), styles, snapshot.buyers)
                 writeOperator(workbook.createSheet(SHEET_OPERATOR), styles, snapshot.operator)
                 writeSummary(workbook.createSheet(SHEET_SUMMARY), styles, snapshot)
+                // Store each formula's result next to it, for viewers that never calculate.
+                XSSFFormulaEvaluator.evaluateAllFormulaCells(workbook)
 
                 workbook.properties.coreProperties.apply {
                     creator = "BlushDesk"
                     title = "${snapshot.operator.storeName.ifBlank { "Showroom" }} export"
                 }
-                FileOutputStream(partial).use { workbook.write(it) }
+                FileOutputStream(raw).use { workbook.write(it) }
             }
+            rewriteAsPlainZip(raw, partial)
             if (destination.exists()) destination.delete()
             if (!partial.renameTo(destination)) {
                 partial.copyTo(destination, overwrite = true)
@@ -64,32 +81,120 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
         } catch (e: Throwable) {
             partial.delete()
             throw e
+        } finally {
+            raw.delete()
         }
         destination
     }
 
-    // ---- Worksheet 1: Buyers ----------------------------------------------------------------
+    /**
+     * POI streams every part of the package into the ZIP with a "data descriptor": the local
+     * header says zero for the CRC and sizes, and the real values follow the data. Desktop Excel
+     * reads the central directory and does not mind. Excel for Android refuses such a file and
+     * calls it password-protected. Copying the entries into a seekable file lets commons-compress
+     * go back and write the real CRC and sizes into every local header, the way Excel saves its own
+     * files. ZIP64 and the UTF-8 name flag are left off too: an export is far below 4 GB and every
+     * part name is ASCII.
+     */
+    private fun rewriteAsPlainZip(source: File, target: File) {
+        ZipFile(source).use { zip ->
+            ZipArchiveOutputStream(target).use { out ->
+                out.setUseZip64(Zip64Mode.Never)
+                out.setUseLanguageEncodingFlag(false)
+                for (entry in zip.entries()) {
+                    out.putArchiveEntry(
+                        ZipArchiveEntry(entry.name).apply {
+                            method = ZipEntry.DEFLATED
+                            time = entry.time
+                        },
+                    )
+                    zip.getInputStream(entry).use { it.copyTo(out) }
+                    out.closeArchiveEntry()
+                }
+            }
+        }
+    }
+
+    // ---- Worksheet 1: Items -----------------------------------------------------------------
+
+    /**
+     * The sheet to read on a tablet: each order's products as Product Name / Quantity / Price /
+     * Total Amount, newest order first, each order with its total and a grand total at the end.
+     * The totals are formulas, so the sheet still adds up if someone edits a quantity or price in
+     * Excel. The grand total adds the rows labelled [ORDER_TOTAL_LABEL].
+     */
+    private fun writeItems(sheet: XSSFSheet, styles: Styles, buyers: List<BuyerWithOrders>) {
+        writeHeader(sheet, styles, ITEM_COLUMNS, widths = listOf(40, 12, 16, 18))
+        sheet.createFreezePane(0, 1)
+        fitToWidth(sheet, landscape = false)
+
+        val orders = ordersOf(buyers).reversed()
+        if (orders.isEmpty()) {
+            sheet.createRow(1).text(0, "No orders yet", styles.subtitle)
+            return
+        }
+
+        var row = 1
+        orders.forEach { (buyer, withItems) ->
+            val order = withItems.order
+            val title = "${Formats.orderNumber(order.id)} · ${buyer.fullName} · ${Formats.date(order.purchaseDateTime, zone)}"
+            sheet.createRow(row).apply {
+                text(0, title, styles.orderTitle)
+                (1..3).forEach { createCell(it).cellStyle = styles.orderTitle }
+            }
+            sheet.addMergedRegion(CellRangeAddress(row, row, 0, 3))
+            row++
+
+            val firstLine = row + 1 // formulas use Excel's 1-based row numbers
+            withItems.items.forEach { item ->
+                val excelRow = row + 1
+                sheet.createRow(row).apply {
+                    text(0, item.productName, styles.body(Kind.TEXT, false))
+                    number(1, item.quantity.toDouble(), styles.body(Kind.COUNT, false))
+                    number(2, Money.toExcelNumber(item.unitPrice), styles.body(Kind.MONEY, false))
+                    formula(3, "ROUND(B$excelRow*C$excelRow,2)", styles.body(Kind.MONEY, false))
+                }
+                row++
+            }
+            sheet.createRow(row).apply {
+                text(2, ORDER_TOTAL_LABEL, styles.orderTotalLabel)
+                formula(3, "SUM(D$firstLine:D$row)", styles.body(Kind.MONEY_BOLD, false))
+            }
+            row += 2 // the total, then a blank row before the next order
+        }
+
+        sheet.createRow(row).apply {
+            heightInPoints = 22f
+            text(0, "GRAND TOTAL", styles.grandTotalLabel)
+            (1..2).forEach { createCell(it).cellStyle = styles.grandTotalLabel }
+            formula(3, "SUMIF(C2:C$row,\"$ORDER_TOTAL_LABEL\",D2:D$row)", styles.grandTotal)
+        }
+        sheet.addMergedRegion(CellRangeAddress(row, row, 0, 2))
+    }
+
+    // ---- Worksheet 2: Buyers ----------------------------------------------------------------
 
     private fun writeBuyers(sheet: XSSFSheet, styles: Styles, buyers: List<BuyerWithOrders>) {
-        writeHeader(sheet, styles, BUYER_COLUMNS, widths = listOf(10, 26, 18, 30, 16, 18))
+        writeHeader(sheet, styles, BUYER_COLUMNS, widths = listOf(10, 26, 18, 24, 30, 16, 18))
         buyers.forEachIndexed { index, (buyer, orders) ->
             val zebra = index % 2 == 1
             sheet.createRow(index + 1).apply {
                 number(0, buyer.id.toDouble(), styles.body(Kind.ID, zebra))
                 text(1, buyer.fullName, styles.body(Kind.TEXT, zebra))
                 text(2, buyer.contactNumber, styles.body(Kind.TEXT, zebra))
-                text(3, buyer.email, styles.body(Kind.TEXT, zebra))
-                createCell(4).apply {
+                text(3, buyer.facebookName, styles.body(Kind.TEXT, zebra))
+                text(4, buyer.email, styles.body(Kind.TEXT, zebra))
+                createCell(5).apply {
                     setCellValue(buyer.dateAdded.atZone(zone).toLocalDate())
                     cellStyle = styles.body(Kind.DATE, zebra)
                 }
-                number(5, orders.size.toDouble(), styles.body(Kind.COUNT, zebra))
+                number(6, orders.size.toDouble(), styles.body(Kind.COUNT, zebra))
             }
         }
         finishTable(sheet, BUYER_COLUMNS.size, buyers.size)
     }
 
-    // ---- Worksheet 2: Orders ----------------------------------------------------------------
+    // ---- Worksheet 3: Orders ----------------------------------------------------------------
 
     /**
      * One row per product line, so an order with three products takes three rows sharing the same
@@ -98,9 +203,7 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
      */
     private fun writeOrders(sheet: XSSFSheet, styles: Styles, buyers: List<BuyerWithOrders>) {
         writeHeader(sheet, styles, ORDER_COLUMNS, widths = listOf(10, 10, 24, 32, 15, 10, 16, 15, 14, 17, 16, 18, 16))
-        val orders = buyers
-            .flatMap { entry -> entry.orders.map { entry.buyer to it } }
-            .sortedWith(compareBy({ it.second.order.purchaseDateTime }, { it.second.order.id }))
+        val orders = ordersOf(buyers)
 
         var rowIndex = 1
         orders.forEachIndexed { orderIndex, (buyer, withItems) ->
@@ -130,7 +233,7 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
         finishTable(sheet, ORDER_COLUMNS.size, rowIndex - 1)
     }
 
-    // ---- Worksheet 3: Operator --------------------------------------------------------------
+    // ---- Worksheet 4: Operator --------------------------------------------------------------
 
     private fun writeOperator(sheet: XSSFSheet, styles: Styles, operator: OperatorProfile) {
         writeHeader(sheet, styles, OPERATOR_COLUMNS, widths = listOf(26, 28, 30, 18))
@@ -141,10 +244,10 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
             text(3, operator.phoneNumber, styles.body(Kind.TEXT, false))
         }
         sheet.createFreezePane(0, 1)
-        landscapeFitToWidth(sheet)
+        fitToWidth(sheet)
     }
 
-    // ---- Worksheet 4: Summary ---------------------------------------------------------------
+    // ---- Worksheet 5: Summary ---------------------------------------------------------------
 
     private fun writeSummary(sheet: XSSFSheet, styles: Styles, snapshot: ExportSnapshot) {
         sheet.setColumnWidth(0, 30 * 256)
@@ -175,7 +278,7 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
                 }
             }
         }
-        landscapeFitToWidth(sheet)
+        fitToWidth(sheet)
     }
 
     private sealed interface SummaryValue {
@@ -197,6 +300,11 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
 
     // ---- Shared sheet helpers ---------------------------------------------------------------
 
+    /** Every order with its buyer, oldest first (ties broken by id, so the order is stable). */
+    private fun ordersOf(buyers: List<BuyerWithOrders>): List<Pair<Buyer, OrderWithItems>> = buyers
+        .flatMap { entry -> entry.orders.map { entry.buyer to it } }
+        .sortedWith(compareBy({ it.second.order.purchaseDateTime }, { it.second.order.id }))
+
     private fun writeHeader(sheet: XSSFSheet, styles: Styles, titles: List<String>, widths: List<Int>) {
         val header = sheet.createRow(0)
         header.heightInPoints = 24f
@@ -210,11 +318,11 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
     private fun finishTable(sheet: XSSFSheet, columnCount: Int, dataRows: Int) {
         sheet.createFreezePane(0, 1)
         sheet.setAutoFilter(CellRangeAddress(0, maxOf(dataRows, 1), 0, columnCount - 1))
-        landscapeFitToWidth(sheet)
+        fitToWidth(sheet)
     }
 
-    private fun landscapeFitToWidth(sheet: XSSFSheet) {
-        sheet.printSetup.landscape = true
+    private fun fitToWidth(sheet: XSSFSheet, landscape: Boolean = true) {
+        sheet.printSetup.landscape = landscape
         sheet.fitToPage = true
         sheet.printSetup.fitWidth = 1
         sheet.printSetup.fitHeight = 0
@@ -230,6 +338,14 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
     private fun XSSFRow.number(col: Int, value: Double, style: XSSFCellStyle) {
         createCell(col).apply {
             setCellValue(value)
+            cellStyle = style
+        }
+    }
+
+    /** [formula] is written without the leading "=", as POI expects. */
+    private fun XSSFRow.formula(col: Int, formula: String, style: XSSFCellStyle) {
+        createCell(col).apply {
+            cellFormula = formula
             cellStyle = style
         }
     }
@@ -257,6 +373,30 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
             alignment = HorizontalAlignment.CENTER
             verticalAlignment = VerticalAlignment.CENTER
             wrapText = true
+            border()
+        }
+
+        val orderTitle = cached("order-title") {
+            setFont(font(bold = true, color = BrandPalette.DEEP_MAGENTA))
+            fill(BrandPalette.LAVENDER_BLUSH)
+            verticalAlignment = VerticalAlignment.CENTER
+            border()
+        }
+        val orderTotalLabel = cached("order-total-label") {
+            setFont(font(bold = true, color = BrandPalette.DEEP_MAGENTA))
+            alignment = HorizontalAlignment.RIGHT
+        }
+        val grandTotalLabel = cached("grand-total-label") {
+            setFont(font(size = 12, bold = true, color = BrandPalette.WHITE))
+            fill(BrandPalette.VIBRANT_ROSE)
+            verticalAlignment = VerticalAlignment.CENTER
+            border()
+        }
+        val grandTotal = cached("grand-total") {
+            setFont(font(size = 12, bold = true, color = BrandPalette.WHITE))
+            fill(BrandPalette.VIBRANT_ROSE)
+            verticalAlignment = VerticalAlignment.CENTER
+            dataFormat = formats.getFormat("\"${Money.SYMBOL}\"#,##0.00")
             border()
         }
 
@@ -329,6 +469,7 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
     }
 
     companion object {
+        const val SHEET_ITEMS = "Items"
         const val SHEET_BUYERS = "Buyers"
         const val SHEET_ORDERS = "Orders"
         const val SHEET_OPERATOR = "Operator"
@@ -337,7 +478,18 @@ class ExcelExporter(private val zone: ZoneId = ZoneId.systemDefault()) {
         /** Row index of the "Metric | Value" header on the Summary sheet (after title and timestamp). */
         const val SUMMARY_HEADER_ROW = 3
 
-        val BUYER_COLUMNS = listOf("Buyer ID", "Full Name", "Contact Number", "Email", "Date Added", "Number of Orders")
+        /** Not in the original specification: asked for later, to read orders on a tablet. */
+        val ITEM_COLUMNS = listOf("Product Name", "Quantity", "Price", "Total Amount")
+
+        /** Marks each order's total row on the Items sheet; the grand total's SUMIF looks for it. */
+        const val ORDER_TOTAL_LABEL = "Order total"
+
+        val BUYER_COLUMNS = listOf(
+            "Buyer ID", "Full Name", "Contact Number",
+            // Not in the original specification: the alternative to a contact number.
+            "Facebook Name",
+            "Email", "Date Added", "Number of Orders",
+        )
 
         val ORDER_COLUMNS = listOf(
             "Order ID", "Buyer ID", "Buyer Name", "Product", "Unit Price", "Quantity", "Total Amount",

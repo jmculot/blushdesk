@@ -33,6 +33,13 @@ object Formats {
         STAMP.format(instant.atZone(zone))
 
     /** The receipt number printed on PDFs and shown on order cards: BD-000042. */
+    /** A buyer's contact for one-line lists: the phone number, else "Facebook: <name>". */
+    fun contactLine(phone: String, facebookName: String): String = when {
+        phone.isNotBlank() -> phone
+        facebookName.isNotBlank() -> "Facebook: $facebookName"
+        else -> ""
+    }
+
     fun orderNumber(orderId: Long): String = "BD-" + orderId.toString().padStart(6, '0')
 
     /** "Velvet Sofa", "Velvet Sofa + 1 more", "Velvet Sofa + 3 more": a one-line name for an order. */
